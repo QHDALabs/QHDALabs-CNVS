@@ -42,6 +42,11 @@ and CLI configuration behavior.
   operational capabilities that are not implemented.
 - Preserve schema compatibility or document and test intentional schema
   changes.
+- Treat packaged JSON Schema files in `src/cnvs/schemas/` and public contracts
+  in `schemas/` as one contract; keep them synchronized and version migrations
+  additively.
+- Persist canonical record updates as new revisions; never mutate historical
+  revision payloads or raw source snapshots.
 - Add or update focused tests for behavior and record-format changes.
 - Run `python -m unittest discover -s tests -v` after changes that affect
   Python code or examples.

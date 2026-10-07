@@ -10,6 +10,7 @@ readme = "README.md"
 requires-python = ">=3.12"
 license = "MIT"
 dependencies = [
+    "jsonschema>=4.23,<5",
     "PyYAML>=6.0,<7",
 ]
 
@@ -18,3 +19,6 @@ cnvs = "cnvs.cli:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.setuptools.package-data]
+cnvs = ["migrations/*.sql", "schemas/*.json"]

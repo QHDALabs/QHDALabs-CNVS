@@ -1,4 +1,5 @@
 {
+  "schema_version": "0.1",
   "evidence_id": "EVD-EX-001",
   "event_id": "CNVS-EVT-2026-10-07-0001",
   "evidence_type": "IMAGE",

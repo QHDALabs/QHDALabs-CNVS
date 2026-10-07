@@ -1,0 +1,37 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://qhdalabs.example/cnvs/schemas/assessment.schema.json",
+  "title": "CNVS Assessment Snapshot",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version", "assessment_id", "event_id", "created_at",
+    "pipeline_version", "facts", "claim_ids", "evidence_ids", "confidence",
+    "contradictions", "information_gaps", "assessment_text", "human_reviewed"
+  ],
+  "properties": {
+    "schema_version": { "const": "0.1" },
+    "assessment_id": { "type": "string", "minLength": 1 },
+    "event_id": { "type": "string", "minLength": 1 },
+    "created_at": { "type": "string", "format": "date-time" },
+    "pipeline_version": { "type": "string", "minLength": 1 },
+    "facts": { "type": "array", "items": { "type": "string" } },
+    "claim_ids": {
+      "type": "array", "items": { "type": "string" }, "uniqueItems": true
+    },
+    "evidence_ids": {
+      "type": "array", "items": { "type": "string" }, "uniqueItems": true
+    },
+    "confidence": {
+      "type": "object",
+      "additionalProperties": {
+        "enum": ["LOW", "MEDIUM", "HIGH", "UNKNOWN"]
+      },
+      "required": ["occurrence", "method", "attribution"]
+    },
+    "contradictions": { "type": "array", "items": { "type": "string" } },
+    "information_gaps": { "type": "array", "items": { "type": "string" } },
+    "assessment_text": { "type": "string" },
+    "human_reviewed": { "type": "boolean" }
+  }
+}

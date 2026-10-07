@@ -5,18 +5,9 @@
   "type": "object",
   "additionalProperties": false,
   "required": [
-    "schema_version",
-    "evidence_id",
-    "event_id",
-    "evidence_type",
-    "observation",
-    "source_id",
-    "collection_time",
-    "event_time",
-    "directness",
-    "independence_group",
-    "verification_status",
-    "analyst_notes",
+    "schema_version", "evidence_id", "event_id", "evidence_type",
+    "observation", "source_id", "collection_time", "event_time", "directness",
+    "independence_group", "verification_status", "analyst_notes",
     "reliability_assessment"
   ],
   "properties": {

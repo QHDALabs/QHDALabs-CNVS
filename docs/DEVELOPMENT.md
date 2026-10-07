@@ -70,6 +70,29 @@ identifiers, country-to-language references, supported source access policy
 and supported/out-of-scope category separation. Scope changes require updating
 the requirements, configuration and validator together.
 
+## Local database
+
+Stage 3 uses SQLite and applies checksummed migrations automatically when the
+database is opened. The default database path is `.data/cnvs.sqlite3`; override
+it with `CNVS_DATABASE_PATH` or `--database` on a database command:
+
+```powershell
+python -m cnvs db migrate
+python -m cnvs db status
+python -m cnvs db status --database .data/research.sqlite3
+```
+
+Database files are local runtime data and are excluded from Git. Back up and
+protect them according to the sensitivity and retention of the records they
+contain. This storage layer does not implement authentication, role-based
+permissions, administrator deletion workflows, encryption at rest or a
+production backup policy.
+
+Canonical JSON Schema records are validated before storage, and database
+revisions preserve prior record payloads. Raw snapshots are content-addressed
+and immutable. `cnvs db status` shows the applied schema migrations; changed
+migration files are rejected and require a new migration instead.
+
 `CNVS_LOG_LEVEL` accepts `DEBUG`, `INFO`, `WARNING`, `ERROR` or `CRITICAL`;
 the default is `WARNING`. Environment values are read from the process
 environment. CNVS does not implicitly load `.env` files. Do not put credentials

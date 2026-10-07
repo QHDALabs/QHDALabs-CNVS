@@ -17,18 +17,9 @@
     },
     "event_type": {
       "enum": [
-        "MILITARY",
-        "SABOTAGE",
-        "CYBER",
-        "MARITIME",
-        "AVIATION",
-        "INFRASTRUCTURE",
-        "POLITICAL",
-        "DIPLOMATIC",
-        "ENERGY",
-        "INDUSTRIAL",
-        "NATURAL",
-        "OTHER"
+        "MILITARY", "SABOTAGE", "CYBER", "MARITIME", "AVIATION",
+        "INFRASTRUCTURE", "POLITICAL", "DIPLOMATIC", "ENERGY",
+        "INDUSTRIAL", "NATURAL", "OTHER"
       ]
     },
     "title": { "type": "string", "minLength": 1 },

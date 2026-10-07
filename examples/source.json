@@ -1,4 +1,5 @@
 {
+  "schema_version": "0.1",
   "source_id": "SRC-EX-001",
   "source_class": "PRIMARY_OBSERVATION",
   "publisher": "Synthetic Maritime Observer",

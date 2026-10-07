@@ -1,0 +1,23 @@
+{
+  "schema_version": "0.1",
+  "assessment_id": "ASM-EX-001",
+  "event_id": "CNVS-EVT-2026-10-07-0001",
+  "created_at": "2026-10-07T09:00:00Z",
+  "pipeline_version": "0.1.0",
+  "facts": [
+    "A synthetic training record describes a mark in an illustrative image."
+  ],
+  "claim_ids": ["CLM-EX-001"],
+  "evidence_ids": ["EVD-EX-001"],
+  "confidence": {
+    "occurrence": "UNKNOWN",
+    "method": "UNKNOWN",
+    "attribution": "UNKNOWN"
+  },
+  "contradictions": [],
+  "information_gaps": [
+    "No independent evidence is included in this synthetic example."
+  ],
+  "assessment_text": "No real-world conclusion can be drawn from this training fixture.",
+  "human_reviewed": false
+}

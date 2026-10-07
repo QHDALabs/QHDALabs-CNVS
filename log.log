@@ -82,6 +82,21 @@ COMPLETED
        CI installs the package with requirements.txt, runs tests and
        validates the MVP config.
 
+[DONE] Implement versioned canonical records and local persistence
+       Reference: src/cnvs/models.py, src/cnvs/validation.py,
+       src/cnvs/storage.py, src/cnvs/migrations/001_initial.sql
+       Outcome: Added typed event, source, claim, evidence and assessment
+       models; JSON Schema 0.1 validation; checksummed SQLite migrations;
+       current records plus append-only revision history; content-addressed
+       immutable raw snapshots; and assessment reconstruction from exact
+       linked event/source/claim/evidence revisions.
+       Interface: cnvs db migrate/status; default .data/cnvs.sqlite3.
+       Validation: 30 tests pass on Python 3.12 and 3.14 and cover schemas,
+       invalid data, migration checksum and concurrency, persistence, links,
+       immutable snapshots and historical reconstruction.
+       Limitation: Authentication, administrative deletion, encryption and
+       production backup/retention operations remain unimplemented.
+
 
 MVP IMPLEMENTATION ROADMAP
 =========================
@@ -118,20 +133,22 @@ Done when:
 
 Stage 3 — Implement canonical records and persistent storage
 ------------------------------------------------------------
-Status: TODO
+Status: DONE
 Tasks:
-- Implement typed models for events, sources, claims and evidence based on
-  schemas/ and docs/DATA_MODEL.md.
-- Add schema validation and explicit schema-version handling.
-- Implement database migrations and persistence for canonical records.
-- Preserve raw source snapshots as immutable records or objects, with links
-  from normalized records to the retained original.
-- Track creation/update times and version analytical changes for reconstruction.
+- Implement typed event, source, claim, evidence and assessment snapshot models.
+- Validate persisted records against explicit versioned JSON Schemas.
+- Implement checksummed SQLite migrations, canonical record persistence and
+  append-only revision history.
+- Preserve raw source snapshots by SHA-256, verify content integrity and reject
+  in-place updates/deletes.
+- Capture the exact revisions linked to each assessment for reconstruction.
 Done when:
-- Valid records can be saved, retrieved and rejected with actionable errors
-  when malformed.
-- A stored assessment can be reconstructed from versioned linked records.
-- Raw source content is not silently overwritten by normalization or correction.
+- Valid records can be saved and retrieved as typed objects; malformed or
+  cross-event references are rejected with actionable errors.
+- A stored assessment can be reconstructed with the exact event/source/claim/
+  evidence revisions used when it was recorded.
+- Updates append revisions; prior record payloads and raw snapshots cannot be
+  modified or deleted through the database API.
 
 Stage 4 — Build source registry and collection policy
 -----------------------------------------------------

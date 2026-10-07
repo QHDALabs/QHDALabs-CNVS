@@ -80,6 +80,7 @@ does not describe a real event.
 - [Source](./examples/source.json)
 - [Claim](./examples/claim.json)
 - [Evidence](./examples/evidence.json)
+- [Assessment snapshot](./examples/assessment.json)
 - [Analyst report](./examples/event-report.json)
 
 The examples use stable IDs to link records. The event report keeps occurrence,
@@ -99,8 +100,10 @@ python -m cnvs config validate
 python -m unittest discover -s tests -v
 ```
 
-The `cnvs` command currently validates configuration only; it does not collect
-sources or produce operational assessments. See
+The `cnvs` command validates configuration and manages the local SQLite schema.
+Typed records, schema validation, revision history and immutable snapshots are
+available as runtime components; source collection and operational report
+generation are not implemented. See
 [docs/DEVELOPMENT.md](./docs/DEVELOPMENT.md) for platform-specific setup and
 environment variable details.
 
@@ -115,16 +118,17 @@ require documented review. See [docs/SCORING.md](./docs/SCORING.md) and
 ## Validation
 
 The test runner uses Python's standard-library `unittest`. Install the project
-first to make its PyYAML runtime dependency available:
+first to make its YAML and JSON Schema runtime dependencies available:
 
 ```powershell
 python -m pip install --constraint requirements.txt --editable .
 python -m unittest discover -s tests -v
 ```
 
-Tests check JSON syntax, required fields, example references, the confirmed MVP
-configuration and CLI settings. They do not validate a live pipeline or
-analyst conclusions.
+Tests check JSON Schema validity and parity, example references, the confirmed
+MVP configuration, CLI settings, database migrations, record revision history,
+immutable source snapshots and assessment reconstruction. They do not validate
+a live ingestion pipeline or analyst conclusions.
 
 ## Contributing
 
