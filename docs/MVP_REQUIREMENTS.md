@@ -95,6 +95,10 @@ do not imply that authentication or access control already exists. The MVP
 requires recorded human review, but does not require the reviewer to be a
 different person from the report author.
 
+The first analyst interface is a command-line workflow. A REST API is not part
+of the initial MVP runtime and may be reconsidered after the CLI workflow has
+been exercised.
+
 Reports are for internal use. The MVP does not automatically publish reports
 to the public or external systems.
 

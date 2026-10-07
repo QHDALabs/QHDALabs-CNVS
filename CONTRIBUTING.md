@@ -16,15 +16,20 @@ analytical safeguards in `MANIFEST.md` and `ARCHITECTURE.md`.
 
 ## Validation
 
-For Python code and example record changes, run:
+Install the package in an isolated environment first (see
+[`docs/DEVELOPMENT.md`](docs/DEVELOPMENT.md)). For Python code and example
+record changes, run:
 
 ```powershell
+python -m pip install --constraint requirements.txt --editable .
+python -m cnvs config validate
 python -m unittest discover -s tests -v
 ```
 
 Also ensure JSON examples remain valid and configuration changes preserve the
-documented semantics. The current test suite checks fixtures and references;
-it does not validate analytical conclusions.
+documented semantics. The current test suite checks fixture records,
+configuration scope and runtime behavior; it does not validate analytical
+conclusions.
 
 ## Pull requests
 

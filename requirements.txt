@@ -1,0 +1,2 @@
+# Runtime dependency set for repeatable local installs and CI.
+PyYAML==6.0.3

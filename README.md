@@ -33,14 +33,15 @@ implementation phases.
 ├── MANIFEST.md
 ├── ARCHITECTURE.md
 ├── AGENT.md              # Working guidance for AI coding agents
+├── pyproject.toml        # Python 3.12+ package metadata and CLI entry point
+├── requirements.txt      # Pinned runtime dependency for local setup and CI
 ├── log.log               # Completed work and roadmap to the MVP
-├── docs/MVP_REQUIREMENTS.md # Confirmed MVP scope and acceptance criteria
+├── docs/                 # Data model, development, MVP requirements and policies
 ├── CONTRIBUTING.md       # Contribution and validation guidance
 ├── LICENSE               # MIT License
 ├── SECURITY.md           # Private vulnerability reporting
 ├── .github/              # CI, Dependabot and contribution templates
-├── docs/                 # Data model, scoring, source policy, analyst and security guides
-├── config/               # Example country, language, source-class and scoring settings
+├── config/               # Reviewed MVP catalogs plus source-class and scoring examples
 ├── ingestion/            # Source collection boundaries
 ├── normalization/        # Language and record normalization boundaries
 ├── extraction/           # Claim and attribution extraction boundaries
@@ -53,6 +54,7 @@ implementation phases.
 ├── api/                  # Future REST API boundary
 ├── workers/              # Future asynchronous processing boundary
 ├── ui/                   # Future analyst interface boundary
+├── src/cnvs/             # Python runtime, configuration validator and CLI
 ├── schemas/              # JSON Schemas for canonical records
 ├── tests/                # Fixture and schema consistency tests
 └── examples/             # Synthetic event, source, claim, evidence and report records
@@ -83,24 +85,46 @@ does not describe a real event.
 The examples use stable IDs to link records. The event report keeps occurrence,
 method and attribution confidence separate and states remaining gaps explicitly.
 
+## Development setup
+
+The project requires Python 3.12 or newer. From the repository root, create an
+environment, install the package in editable mode, validate configuration and
+run the tests:
+
+```powershell
+py -3.12 -m venv .venv
+.\.venv\Scripts\Activate.ps1
+python -m pip install --constraint requirements.txt --editable .
+python -m cnvs config validate
+python -m unittest discover -s tests -v
+```
+
+The `cnvs` command currently validates configuration only; it does not collect
+sources or produce operational assessments. See
+[docs/DEVELOPMENT.md](./docs/DEVELOPMENT.md) for platform-specific setup and
+environment variable details.
+
 ## Configuration
 
-Configuration files under `config/` are starting examples, not authoritative
-country coverage, source ratings or calibrated scoring policy. Country selection
-must be driven by the event, and scoring changes require documented review.
-See [docs/SCORING.md](./docs/SCORING.md) and
+The country, language, event-type and source-type files in `config/` define the
+confirmed MVP starting scope; select country coverage according to each event.
+Source classes and scoring remain uncalibrated examples. Changes to MVP scope
+require documented review. See [docs/SCORING.md](./docs/SCORING.md) and
 [docs/SOURCE_POLICY.md](./docs/SOURCE_POLICY.md).
 
 ## Validation
 
-The current fixture tests use only the Python standard library:
+The test runner uses Python's standard-library `unittest`. Install the project
+first to make its PyYAML runtime dependency available:
 
 ```powershell
+python -m pip install --constraint requirements.txt --editable .
 python -m unittest discover -s tests -v
 ```
 
-The tests check JSON syntax, required top-level fields and cross-record
-references. They do not validate a live pipeline or analyst conclusions.
+Tests check JSON syntax, required fields, example references, the confirmed MVP
+configuration and CLI settings. They do not validate a live pipeline or
+analyst conclusions.
 
 ## Contributing
 

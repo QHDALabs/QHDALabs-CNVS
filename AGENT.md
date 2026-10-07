@@ -13,6 +13,8 @@ analytical behavior. Follow the human-in-the-loop requirements and quality
 gates described there.
 Read `docs/MVP_REQUIREMENTS.md` before changing MVP scope, and keep its
 acceptance criteria aligned with `config/` and `log.log`.
+Read `docs/DEVELOPMENT.md` for the supported Python runtime, editable install
+and CLI configuration behavior.
 
 ## Non-negotiable analytical invariants
 
