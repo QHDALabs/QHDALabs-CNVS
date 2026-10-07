@@ -137,6 +137,27 @@ class RawSnapshot:
         return f"sha256:{self.content_sha256}"
 
 
+@dataclass(frozen=True)
+class CollectionResult:
+    collection_id: str
+    source_id: str
+    source_metadata: dict[str, JsonValue]
+    attempt_number: int
+    status: str
+    retry_of: str | None
+    source_url: str
+    final_url: str | None
+    started_at: str
+    completed_at: str
+    http_status: int | None
+    content_type: str | None
+    content_sha256: str | None
+    archived_content_ref: str | None
+    origin_identifiers: tuple[str, ...]
+    error_code: str | None
+    error_message: str | None
+
+
 CanonicalRecord: TypeAlias = Event | Source | Claim | Evidence | Assessment
 RECORD_TYPES: dict[str, type[CanonicalRecord]] = {
     model.record_type: model

@@ -152,18 +152,29 @@ Done when:
 
 Stage 4 — Build source registry and collection policy
 -----------------------------------------------------
-Status: TODO
+Status: IMPLEMENTED; approval of any live source set remains pending
 Tasks:
-- Define a source registry with publisher, source class, country, language,
-  access method and collection constraints.
-- Establish a reviewed, event-relevant initial source set.
-- Implement RSS feed and URL intake with timestamps, origin identifiers and
-  collection results.
-- Record failures, retries and access restrictions explicitly.
+- Add a validated analyst-managed YAML registry with publisher, source class,
+  country, language, public access method, event relevance, review state and
+  bounded collection/retention constraints.
+- Keep the checked-in example synthetic, pending and disabled; do not imply
+  that a live event-relevant source set has been reviewed or endorsed.
+- Implement bounded RSS/URL intake with timestamps, origin identifiers,
+  redirect/public-address checks and `robots.txt` respect.
+- Persist immutable collection results, source-registry snapshots, optional
+  content snapshots, explicit failures/access blocks and sequential manual
+  retries.
 Done when:
-- An analyst can configure an approved RSS/URL source and inspect each
-  collection result and failure.
-- Collected content is retained with auditable source provenance.
+- An analyst can configure and approve a public RSS/URL source, collect it,
+  and inspect every success, failure, access restriction and retry.
+- Collected content is retained only when the source-specific constraints allow
+  it, with immutable source metadata and origin provenance.
+- Automated tests exercise synthetic RSS/URL responses and access restrictions.
+  The initial real-world source set remains unpopulated until an event is
+  selected and the responsible analyst completes source/legal review.
+Validation: 49 tests pass on Python 3.12 (installed wheel) and Python 3.14
+(workspace environment). The wheel includes both database migrations; its CLI
+validated configuration, source registry and SQLite migration status.
 
 Stage 5 — Normalize, identify language and deduplicate sources
 --------------------------------------------------------------

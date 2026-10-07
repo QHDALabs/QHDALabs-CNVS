@@ -77,3 +77,26 @@ the digest on insertion and retrieval and rejects updates or deletes at the
 database level. Snapshot immutability is a data-integrity control, not an
 authorization or retention policy; administrator deletion workflows and
 production backup handling remain unimplemented.
+
+## Source registry and collection attempts
+
+The analyst-managed `config/source_registry.yaml` records source identity,
+publisher, class, country, language, access method, event relevance, review
+state and collection constraints. Only enabled entries with explicit review
+approval can make network requests. The checked-in entry is synthetic and
+disabled; no live source is pre-approved.
+
+Every collection execution appends a `CollectionResult` with a unique attempt
+ID, registry source ID, attempt number, retry link, start/completion times, a
+snapshot of the source registration and constraints, requested/final URL, HTTP
+status, media type, content digest, origin identifiers, result state and error
+details. Results and their linked raw snapshot references are immutable.
+Retries are explicit, sequential and
+allowed only for a failed latest attempt. `BLOCKED` captures access denials,
+including `robots.txt` restrictions; blocked work is not silently retried.
+
+RSS collection retains the feed snapshot only when explicitly permitted and
+records item GUID/ID/link values as origin identifiers. URL collection records
+the requested and final URL; fetched page bodies are not parsed or transformed
+in this stage. When archiving is not permitted, the body is discarded after
+collection and only metadata and a digest are retained.

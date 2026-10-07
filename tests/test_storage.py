@@ -95,9 +95,9 @@ class DatabaseTests(unittest.TestCase):
     def test_migrations_apply_once_and_persist(self):
         self.assertEqual(
             [version for version, _ in self.database.migration_status()],
-            ["001_initial"],
+            ["001_initial", "002_collection_attempts"],
         )
-        self.assertEqual(self.database.migrate(), 1)
+        self.assertEqual(self.database.migrate(), 2)
 
         reopened = Database(self.database_path)
         self.assertEqual(reopened.migration_status(), self.database.migration_status())
@@ -326,13 +326,14 @@ class DatabaseTests(unittest.TestCase):
         with contextlib.redirect_stdout(output):
             result = main(["db", "migrate", "--database", str(self.database_path)])
         self.assertEqual(result, 0)
-        self.assertIn("1 migration(s) applied", output.getvalue())
+        self.assertIn("2 migration(s) applied", output.getvalue())
 
         output = io.StringIO()
         with contextlib.redirect_stdout(output):
             result = main(["db", "status", "--database", str(self.database_path)])
         self.assertEqual(result, 0)
         self.assertIn("001_initial applied at", output.getvalue())
+        self.assertIn("002_collection_attempts applied at", output.getvalue())
 
     def test_database_cli_reports_database_open_failures_without_traceback(self):
         output = io.StringIO()

@@ -1,0 +1,24 @@
+schema_version: "0.1"
+sources:
+  - id: SYNTHETIC-URL-PL-001
+    publisher: Synthetic fixture publisher
+    source_class: secondary_reporting
+    country: PL
+    language: pl
+    access_method: URL
+    url: https://example.invalid/cnvs-stage-4-fixture
+    event_relevance: Synthetic registry example; not reviewed for a real event.
+    review:
+      status: pending
+      reviewer: null
+      reviewed_at: null
+    enabled: false
+    constraints:
+      max_bytes: 1048576
+      allowed_content_types:
+        - text/html
+        - application/xhtml+xml
+      archive_content: false
+      retention_basis: null
+      respect_robots_txt: true
+      timeout_seconds: 15

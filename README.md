@@ -6,10 +6,12 @@ source-attributed claims, attribution and analyst assessment distinct, while
 recording where information originated and whether evidence chains are
 independent.
 
-> **Status: architecture scaffold.** This repository currently contains the
-> project principles, architecture, initial configuration examples, data
-> schemas and sample analytical records. It is not yet an operational ingestion
-> service, verification engine or analyst application.
+> **Status: early MVP implementation.** The CLI can validate the reviewed
+> configuration, manage a local SQLite database, collect approved public RSS
+> feeds and URLs, and inspect immutable collection results. The checked-in
+> source registry contains only a disabled synthetic example: no live source
+> has been reviewed or approved. CNVS is not a verification engine or analyst
+> application.
 
 ## Guiding principles
 
@@ -41,7 +43,7 @@ implementation phases.
 ├── LICENSE               # MIT License
 ├── SECURITY.md           # Private vulnerability reporting
 ├── .github/              # CI, Dependabot and contribution templates
-├── config/               # Reviewed MVP catalogs plus source-class and scoring examples
+├── config/               # MVP catalogs, source policy and source registry
 ├── ingestion/            # Source collection boundaries
 ├── normalization/        # Language and record normalization boundaries
 ├── extraction/           # Claim and attribution extraction boundaries
@@ -54,7 +56,7 @@ implementation phases.
 ├── api/                  # Future REST API boundary
 ├── workers/              # Future asynchronous processing boundary
 ├── ui/                   # Future analyst interface boundary
-├── src/cnvs/             # Python runtime, configuration validator and CLI
+├── src/cnvs/             # Python runtime, public RSS/URL intake and CLI
 ├── schemas/              # JSON Schemas for canonical records
 ├── tests/                # Fixture and schema consistency tests
 └── examples/             # Synthetic event, source, claim, evidence and report records
@@ -100,9 +102,10 @@ python -m cnvs config validate
 python -m unittest discover -s tests -v
 ```
 
-The `cnvs` command validates configuration and manages the local SQLite schema.
-Typed records, schema validation, revision history and immutable snapshots are
-available as runtime components; source collection and operational report
+The `cnvs` command validates configuration, manages the local SQLite schema,
+and collects approved public RSS/URL sources. Typed records, append-only
+collection history, provenance identifiers and immutable snapshots are
+available as runtime components. Event analysis and operational report
 generation are not implemented. See
 [docs/DEVELOPMENT.md](./docs/DEVELOPMENT.md) for platform-specific setup and
 environment variable details.
@@ -111,9 +114,19 @@ environment variable details.
 
 The country, language, event-type and source-type files in `config/` define the
 confirmed MVP starting scope; select country coverage according to each event.
-Source classes and scoring remain uncalibrated examples. Changes to MVP scope
-require documented review. See [docs/SCORING.md](./docs/SCORING.md) and
+Add sources to `config/source_registry.yaml` only after an analyst has reviewed
+their event relevance, access conditions and collection constraints. The
+checked-in entry is synthetic, pending review and disabled. Source classes and
+scoring remain uncalibrated examples. Changes to MVP scope require documented
+review. See [docs/SCORING.md](./docs/SCORING.md) and
 [docs/SOURCE_POLICY.md](./docs/SOURCE_POLICY.md).
+
+```powershell
+python -m cnvs source list
+python -m cnvs source collect SOURCE-ID
+python -m cnvs source results
+python -m cnvs source retry COLLECTION-ID
+```
 
 ## Validation
 
@@ -126,9 +139,11 @@ python -m unittest discover -s tests -v
 ```
 
 Tests check JSON Schema validity and parity, example references, the confirmed
-MVP configuration, CLI settings, database migrations, record revision history,
-immutable source snapshots and assessment reconstruction. They do not validate
-a live ingestion pipeline or analyst conclusions.
+MVP configuration, registry approval constraints, mocked RSS/URL collection,
+robots and public-address restrictions, append-only collection results,
+database migrations, record revision history, immutable source snapshots and
+assessment reconstruction. They do not validate live source availability,
+source rights, analyst conclusions or source approvals.
 
 ## Contributing
 

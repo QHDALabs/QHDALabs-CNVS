@@ -103,6 +103,8 @@ class RuntimeConfigurationTests(unittest.TestCase):
                 "languages.yaml",
                 "event_types.yaml",
                 "source_types.yaml",
+                "source_classes.yaml",
+                "source_registry.yaml",
             ):
                 shutil.copy(CONFIG_DIR / filename, config_dir / filename)
 
@@ -124,6 +126,8 @@ class RuntimeConfigurationTests(unittest.TestCase):
                 "languages.yaml",
                 "event_types.yaml",
                 "source_types.yaml",
+                "source_classes.yaml",
+                "source_registry.yaml",
             ):
                 shutil.copy(CONFIG_DIR / filename, config_dir / filename)
 
@@ -147,6 +151,8 @@ class RuntimeConfigurationTests(unittest.TestCase):
                 "languages.yaml",
                 "event_types.yaml",
                 "source_types.yaml",
+                "source_classes.yaml",
+                "source_registry.yaml",
             ):
                 shutil.copy(CONFIG_DIR / filename, config_dir / filename)
 
@@ -170,6 +176,8 @@ class RuntimeConfigurationTests(unittest.TestCase):
                 "languages.yaml",
                 "event_types.yaml",
                 "source_types.yaml",
+                "source_classes.yaml",
+                "source_registry.yaml",
             ):
                 shutil.copy(CONFIG_DIR / filename, config_dir / filename)
             (config_dir / "countries.yaml").write_text("countries: [", encoding="utf-8")

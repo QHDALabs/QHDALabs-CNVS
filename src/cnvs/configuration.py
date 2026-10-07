@@ -10,6 +10,8 @@ CONFIG_FILES = (
     "languages.yaml",
     "event_types.yaml",
     "source_types.yaml",
+    "source_classes.yaml",
+    "source_registry.yaml",
 )
 MVP_COUNTRIES = {
     "PL": ("Poland", frozenset({"pl"})),
@@ -286,6 +288,12 @@ def validate_configuration(config_dir: Path) -> ConfigurationSummary:
             "source_types.yaml: archive_content_only_when_permitted must be true."
         )
 
+    from cnvs.registry import RegistryError, load_source_registry
+
+    try:
+        load_source_registry(config_dir)
+    except RegistryError as error:
+        raise ConfigurationError(str(error)) from error
     return ConfigurationSummary(
         country_count=len(country_codes),
         language_count=len(language_code_set),

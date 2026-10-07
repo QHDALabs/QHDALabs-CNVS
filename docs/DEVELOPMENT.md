@@ -1,17 +1,19 @@
 # Development setup
 
-Stage 2 establishes a minimal Python runtime and command-line entry point. The
-CLI currently validates the reviewed MVP configuration; source collection,
-event analysis, persistence, report generation and an API are not implemented.
+The Python CLI validates the reviewed MVP configuration, manages local SQLite
+persistence, and supports explicitly approved public RSS/URL collection.
+Automated event analysis, report generation, authentication and an API are not
+implemented.
 
 ## Requirements
 
 - Python 3.12 or newer
-- Internet access to install the declared PyYAML dependency (unless it is
-  already available to pip)
+- Internet access to install the declared dependencies (unless already
+  available to pip)
 
-No database, API credentials, service containers or `.env` file are required
-for the current scaffold.
+Live collection requires outbound DNS and HTTP(S) access to the configured
+public source and its `robots.txt`. No API credentials, service containers or
+`.env` file are required.
 
 ## Windows PowerShell
 
@@ -55,6 +57,11 @@ uses Python's standard-library `unittest`; no separate test package is needed.
 cnvs --version
 cnvs config validate
 cnvs config validate --config-dir path/to/config
+cnvs source list
+cnvs source collect SOURCE-ID
+cnvs source results
+cnvs source results --source-id SOURCE-ID
+cnvs source retry COLLECTION-ID
 ```
 
 Configuration directory resolution is:
@@ -64,15 +71,45 @@ Configuration directory resolution is:
 3. `./config` relative to the current working directory.
 
 The CLI reports an actionable error and non-zero exit status if configuration
-is missing or inconsistent. The current validation checks the exact approved
-MVP country, language, event-type and source-type catalogs, unique
-identifiers, country-to-language references, supported source access policy
-and supported/out-of-scope category separation. Scope changes require updating
-the requirements, configuration and validator together.
+is missing or inconsistent. Validation checks the approved MVP country,
+language, event-type and source-type catalogs, the registry schema and
+country/language relationships, unique IDs, source review state and collection
+constraints. A registry entry must be explicitly analyst-approved and enabled
+before collection; the checked-in synthetic entry is pending and disabled.
+Scope changes require updating the requirements, configuration and validator
+together.
+
+### Source registry and collection
+
+Configure sources in `config/source_registry.yaml`. Each entry records its
+publisher, source class, MVP country and language, public access method (`RSS`
+or `URL`), event relevance, review metadata and explicit collection limits.
+`review.status: approved`, a named reviewer, a timezone-aware `reviewed_at`,
+and `enabled: true` are required before `source collect` will make a network
+request. Source approval is an analyst attestation, not a legal determination.
+Never put credentials or tokens in source URLs.
+
+The collector accepts only HTTP(S), checks that each destination and redirect
+resolves to public IP addresses, limits redirects, download size and time, and
+honors `robots.txt`. It does not bypass access controls, retry automatically,
+or fetch individual RSS articles. A URL collection stores its original and
+final URL as origin identifiers; RSS collection also records feed item IDs
+and links. Each attempt has an immutable database result with status,
+timestamps, HTTP/media metadata, digest, failure details and optional snapshot
+reference, together with a snapshot of the registry metadata used for that
+attempt. `source retry` is manual and only accepts a failed latest attempt;
+blocked attempts require source/access review rather than retrying. Results
+remain inspectable even if the registry later changes.
+
+Set `archive_content: true` only when applicable access terms permit retaining
+the content and provide a `retention_basis`. When archiving is disabled, CNVS
+stores provenance metadata and a digest but not the fetched body. These
+controls do not provide legal advice, retention/deletion administration or
+protection against a source's terms changing after review.
 
 ## Local database
 
-Stage 3 uses SQLite and applies checksummed migrations automatically when the
+Stages 3-4 use SQLite and apply checksummed migrations automatically when the
 database is opened. The default database path is `.data/cnvs.sqlite3`; override
 it with `CNVS_DATABASE_PATH` or `--database` on a database command:
 
@@ -89,9 +126,10 @@ permissions, administrator deletion workflows, encryption at rest or a
 production backup policy.
 
 Canonical JSON Schema records are validated before storage, and database
-revisions preserve prior record payloads. Raw snapshots are content-addressed
-and immutable. `cnvs db status` shows the applied schema migrations; changed
-migration files are rejected and require a new migration instead.
+revisions preserve prior record payloads. Raw snapshots are content-addressed;
+collection attempts are append-only and immutable. `cnvs db status` shows the
+applied schema migrations; changed migration files are rejected and require a
+new migration instead.
 
 `CNVS_LOG_LEVEL` accepts `DEBUG`, `INFO`, `WARNING`, `ERROR` or `CRITICAL`;
 the default is `WARNING`. Environment values are read from the process

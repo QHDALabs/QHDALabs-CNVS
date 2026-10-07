@@ -5,6 +5,11 @@
 **Status:** Initial scope confirmed by the project owner; legal and operational
 review is still required before production collection.
 
+Stage 4 now provides the registry and local collection workflow described
+below. The checked-in registry intentionally has no approved live sources;
+event-specific source selection and legal/privacy approval remain prerequisites
+before real-world collection.
+
 This document closes Stage 1 of `log.log`. It records the selected MVP boundary
 and defines observable acceptance criteria for later implementation. It is not
 evidence that any MVP capability is already operational.

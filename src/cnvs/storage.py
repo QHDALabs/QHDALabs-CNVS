@@ -2,6 +2,7 @@ import hashlib
 import json
 import sqlite3
 import threading
+import uuid
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -13,6 +14,7 @@ from cnvs.models import (
     Assessment,
     CanonicalRecord,
     Claim,
+    CollectionResult,
     Evidence,
     JsonValue,
     RawSnapshot,
@@ -337,6 +339,189 @@ class Database:
                     ),
                 )
         return snapshot.content_ref
+
+    def record_collection_result(
+        self,
+        *,
+        source_id: str,
+        source_metadata: dict[str, JsonValue] | None = None,
+        source_url: str,
+        status: str,
+        started_at: str,
+        completed_at: str,
+        retry_of: str | None = None,
+        final_url: str | None = None,
+        http_status: int | None = None,
+        content_type: str | None = None,
+        content: bytes | None = None,
+        archive_content: bool = False,
+        origin_identifiers: tuple[str, ...] = (),
+        error_code: str | None = None,
+        error_message: str | None = None,
+    ) -> CollectionResult:
+        if status not in {"SUCCEEDED", "FAILED", "BLOCKED"}:
+            raise StorageError(f"Unsupported collection status: {status}.")
+        if status == "SUCCEEDED" and (error_code is not None or error_message is not None):
+            raise StorageError("Successful collection results cannot contain an error.")
+        if status != "SUCCEEDED" and (not error_code or not error_message):
+            raise StorageError("Failed and blocked collection results need an error code and message.")
+        content_digest = hashlib.sha256(content).hexdigest() if content is not None else None
+        collection_id = uuid.uuid4().hex
+        source_metadata_json = _json_text(source_metadata or {})
+        encoded_identifiers = json.dumps(
+            list(origin_identifiers), ensure_ascii=False, separators=(",", ":")
+        )
+
+        with self._lock, self._write_transaction() as connection:
+            if retry_of is None:
+                previous = connection.execute(
+                    """
+                    SELECT attempt_number FROM collection_attempts
+                    WHERE source_id = ? ORDER BY attempt_number DESC LIMIT 1
+                    """,
+                    (source_id,),
+                ).fetchone()
+                if previous is not None:
+                    raise StorageError(
+                        f"Source {source_id} already has a collection attempt; "
+                        "retries must identify the failed attempt."
+                    )
+                attempt_number = 1
+            else:
+                previous = connection.execute(
+                    """
+                    SELECT source_id, attempt_number, status
+                    FROM collection_attempts WHERE collection_id = ?
+                    """,
+                    (retry_of,),
+                ).fetchone()
+                if previous is None:
+                    raise StorageError(f"Collection attempt {retry_of} was not found.")
+                if previous["status"] != "FAILED":
+                    raise StorageError("Only failed collection attempts can be retried.")
+                if previous["source_id"] != source_id:
+                    raise StorageError("A retry must use the same registered source.")
+                latest = connection.execute(
+                    """
+                    SELECT collection_id FROM collection_attempts
+                    WHERE source_id = ? ORDER BY attempt_number DESC LIMIT 1
+                    """,
+                    (source_id,),
+                ).fetchone()
+                if latest is None or latest["collection_id"] != retry_of:
+                    raise StorageError("Only the latest collection attempt can be retried.")
+                attempt_number = previous["attempt_number"] + 1
+
+            archived_digest: str | None = None
+            if archive_content and content is not None:
+                existing = connection.execute(
+                    "SELECT content FROM raw_snapshots WHERE content_sha256 = ?",
+                    (content_digest,),
+                ).fetchone()
+                if existing is not None:
+                    if bytes(existing["content"]) != content:
+                        raise StorageError("Existing raw snapshot failed its digest integrity check.")
+                else:
+                    connection.execute(
+                        """
+                        INSERT INTO raw_snapshots
+                            (content_sha256, media_type, content, byte_length, created_at)
+                        VALUES (?, ?, ?, ?, ?)
+                        """,
+                        (
+                            content_digest,
+                            content_type or "application/octet-stream",
+                            content,
+                            len(content),
+                            completed_at,
+                        ),
+                    )
+                archived_digest = content_digest
+
+            connection.execute(
+                """
+                INSERT INTO collection_attempts (
+                    collection_id, source_id, source_metadata_json, attempt_number,
+                    status, retry_of,
+                    source_url, final_url, started_at, completed_at, http_status,
+                    content_type, content_sha256, archived_content_sha256,
+                    origin_identifiers_json, error_code, error_message
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    collection_id,
+                    source_id,
+                    source_metadata_json,
+                    attempt_number,
+                    status,
+                    retry_of,
+                    source_url,
+                    final_url,
+                    started_at,
+                    completed_at,
+                    http_status,
+                    content_type,
+                    content_digest,
+                    archived_digest,
+                    encoded_identifiers,
+                    error_code,
+                    error_message,
+                ),
+            )
+        return self.get_collection_result(collection_id)
+
+    @staticmethod
+    def _collection_result_from_row(row: sqlite3.Row) -> CollectionResult:
+        return CollectionResult(
+            collection_id=row["collection_id"],
+            source_id=row["source_id"],
+            source_metadata=json.loads(row["source_metadata_json"]),
+            attempt_number=row["attempt_number"],
+            status=row["status"],
+            retry_of=row["retry_of"],
+            source_url=row["source_url"],
+            final_url=row["final_url"],
+            started_at=row["started_at"],
+            completed_at=row["completed_at"],
+            http_status=row["http_status"],
+            content_type=row["content_type"],
+            content_sha256=row["content_sha256"],
+            archived_content_ref=(
+                f"sha256:{row['archived_content_sha256']}"
+                if row["archived_content_sha256"] is not None
+                else None
+            ),
+            origin_identifiers=tuple(json.loads(row["origin_identifiers_json"])),
+            error_code=row["error_code"],
+            error_message=row["error_message"],
+        )
+
+    def get_collection_result(self, collection_id: str) -> CollectionResult:
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT * FROM collection_attempts WHERE collection_id = ?",
+                (collection_id,),
+            ).fetchone()
+        if row is None:
+            raise StorageError(f"Collection attempt {collection_id} was not found.")
+        return self._collection_result_from_row(row)
+
+    def collection_results(self, source_id: str | None = None) -> list[CollectionResult]:
+        with self._connect() as connection:
+            if source_id is None:
+                rows = connection.execute(
+                    "SELECT * FROM collection_attempts "
+                    "ORDER BY started_at DESC, collection_id"
+                ).fetchall()
+            else:
+                rows = connection.execute(
+                    """
+                    SELECT * FROM collection_attempts WHERE source_id = ?
+                    ORDER BY attempt_number DESC
+                    """,
+                    (source_id,),
+                ).fetchall()
+        return [self._collection_result_from_row(row) for row in rows]
 
     def get_raw_snapshot(self, content_ref: str) -> RawSnapshot:
         if not content_ref.startswith("sha256:"):
