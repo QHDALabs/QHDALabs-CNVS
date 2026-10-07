@@ -1,0 +1,36 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://qhdalabs.example/cnvs/schemas/evidence.schema.json",
+  "title": "CNVS Evidence",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "evidence_id",
+    "event_id",
+    "evidence_type",
+    "observation",
+    "source_id",
+    "collection_time",
+    "event_time",
+    "directness",
+    "independence_group",
+    "verification_status",
+    "analyst_notes"
+  ],
+  "properties": {
+    "evidence_id": { "type": "string", "minLength": 1 },
+    "event_id": { "type": "string", "minLength": 1 },
+    "evidence_type": { "type": "string", "minLength": 1 },
+    "observation": { "type": "string", "minLength": 1 },
+    "source_id": { "type": "string", "minLength": 1 },
+    "collection_time": { "type": "string", "format": "date-time" },
+    "event_time": { "type": ["string", "null"], "format": "date-time" },
+    "directness": { "enum": ["PRIMARY", "SECONDARY", "UNKNOWN"] },
+    "independence_group": { "type": "string", "minLength": 1 },
+    "reliability_assessment": { "type": ["string", "null"] },
+    "verification_status": {
+      "enum": ["UNVERIFIED", "IN_REVIEW", "VERIFIED", "REJECTED"]
+    },
+    "analyst_notes": { "type": "string" }
+  }
+}

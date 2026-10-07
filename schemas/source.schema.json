@@ -1,0 +1,43 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://qhdalabs.example/cnvs/schemas/source.schema.json",
+  "title": "CNVS Source",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "source_id",
+    "source_class",
+    "publisher",
+    "title",
+    "url",
+    "language",
+    "published_at",
+    "collected_at",
+    "origin_source_id",
+    "independence_group",
+    "raw_content_ref"
+  ],
+  "properties": {
+    "source_id": { "type": "string", "minLength": 1 },
+    "source_class": {
+      "enum": [
+        "PRIMARY_OBSERVATION",
+        "INSTITUTIONAL_STATEMENT",
+        "FIRST_HAND_REPORTING",
+        "SECONDARY_REPORTING",
+        "NARRATIVE_ONLY"
+      ]
+    },
+    "publisher": { "type": "string", "minLength": 1 },
+    "title": { "type": "string", "minLength": 1 },
+    "url": { "type": "string", "format": "uri" },
+    "language": { "type": "string", "pattern": "^[a-z]{2,3}(-[A-Z]{2})?$" },
+    "country": { "type": ["string", "null"], "pattern": "^[A-Z]{2}$" },
+    "published_at": { "type": ["string", "null"], "format": "date-time" },
+    "collected_at": { "type": "string", "format": "date-time" },
+    "origin_source_id": { "type": ["string", "null"] },
+    "independence_group": { "type": "string", "minLength": 1 },
+    "raw_content_ref": { "type": "string", "minLength": 1 },
+    "notes": { "type": "string" }
+  }
+}

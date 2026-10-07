@@ -1,0 +1,23 @@
+schema_version: "0.1"
+status: illustrative_uncalibrated
+confidence_levels:
+  - LOW
+  - MEDIUM
+  - HIGH
+  - UNKNOWN
+
+dimensions:
+  - occurrence
+  - method
+  - attribution
+
+indicators:
+  - source_reliability
+  - independence
+  - evidence_convergence
+  - narrative_divergence
+
+policy:
+  repetition_is_confirmation: false
+  narrative_divergence_means_propaganda: false
+  numeric_weights_defined: false

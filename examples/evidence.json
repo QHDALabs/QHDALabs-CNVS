@@ -1,0 +1,14 @@
+{
+  "evidence_id": "EVD-EX-001",
+  "event_id": "CNVS-EVT-2026-10-07-0001",
+  "evidence_type": "IMAGE",
+  "observation": "The synthetic image depicts a mark on the fictional vessel's deck.",
+  "source_id": "SRC-EX-001",
+  "collection_time": "2026-10-07T07:30:00Z",
+  "event_time": "2026-10-07T06:30:00Z",
+  "directness": "PRIMARY",
+  "independence_group": "SYNTHETIC-OBSERVATION-A",
+  "reliability_assessment": "Illustrative only; no real-world verification.",
+  "verification_status": "UNVERIFIED",
+  "analyst_notes": "Synthetic fixture. Do not use as operational evidence."
+}

@@ -1,0 +1,15 @@
+{
+  "source_id": "SRC-EX-001",
+  "source_class": "PRIMARY_OBSERVATION",
+  "publisher": "Synthetic Maritime Observer",
+  "title": "Training image of a fictional vessel",
+  "url": "https://example.invalid/synthetic-vessel-image",
+  "language": "en",
+  "country": "PL",
+  "published_at": "2026-10-07T07:00:00Z",
+  "collected_at": "2026-10-07T07:30:00Z",
+  "origin_source_id": null,
+  "independence_group": "SYNTHETIC-OBSERVATION-A",
+  "raw_content_ref": "synthetic://training/source/SRC-EX-001",
+  "notes": "Fictional training data; not an actual observation."
+}

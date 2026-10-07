@@ -1,0 +1,16 @@
+{
+  "claim_id": "CLM-EX-001",
+  "event_id": "CNVS-EVT-2026-10-07-0001",
+  "subject": "Example cargo vessel",
+  "predicate": "sustained",
+  "object": "damage",
+  "claim_type": "INCIDENT",
+  "attribution": null,
+  "modality": "ASSERTED",
+  "source_id": "SRC-EX-001",
+  "publication_time": "2026-10-07T07:00:00Z",
+  "supporting_evidence_ids": ["EVD-EX-001"],
+  "contradicting_evidence_ids": [],
+  "status": "UNVERIFIED",
+  "confidence": "UNKNOWN"
+}

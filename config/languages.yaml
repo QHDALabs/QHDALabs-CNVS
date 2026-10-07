@@ -1,0 +1,20 @@
+schema_version: "0.1"
+languages:
+  - code: en
+    name: English
+  - code: pl
+    name: Polish
+  - code: de
+    name: German
+  - code: fr
+    name: French
+  - code: fi
+    name: Finnish
+  - code: et
+    name: Estonian
+  - code: uk
+    name: Ukrainian
+  - code: ru
+    name: Russian
+
+# Extend this list based on event-specific country coverage.

@@ -1,0 +1,14 @@
+schema_version: "0.1"
+source_classes:
+  - id: primary_observation
+    description: Directly observable or recorded material, such as imagery or sensor data.
+  - id: institutional_statement
+    description: A statement published by a government or other institution.
+  - id: first_hand_reporting
+    description: Reporting based on direct access or named first-hand sources.
+  - id: secondary_reporting
+    description: Reporting that relies on other reports or statements.
+  - id: narrative_only
+    description: Material that expresses a narrative without independently verifiable evidence.
+
+# These are source types, not reliability scores.

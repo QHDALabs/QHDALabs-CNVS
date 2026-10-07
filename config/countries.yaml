@@ -1,0 +1,33 @@
+# Illustrative working set only. Select coverage dynamically for each event.
+schema_version: "0.1"
+countries:
+  - code: PL
+    name: Poland
+  - code: DE
+    name: Germany
+  - code: FR
+    name: France
+  - code: GB
+    name: United Kingdom
+  - code: FI
+    name: Finland
+  - code: EE
+    name: Estonia
+  - code: UA
+    name: Ukraine
+  - code: MD
+    name: Moldova
+  - code: GE
+    name: Georgia
+  - code: AM
+    name: Armenia
+  - code: AZ
+    name: Azerbaijan
+  - code: BY
+    name: Belarus
+  - code: RU
+    name: Russia
+  - code: US
+    name: United States
+  - code: TR
+    name: Türkiye
