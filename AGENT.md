@@ -11,6 +11,8 @@ service.
 Read `MANIFEST.md` and `ARCHITECTURE.md` before implementing or changing
 analytical behavior. Follow the human-in-the-loop requirements and quality
 gates described there.
+Read `docs/MVP_REQUIREMENTS.md` before changing MVP scope, and keep its
+acceptance criteria aligned with `config/` and `log.log`.
 
 ## Non-negotiable analytical invariants
 

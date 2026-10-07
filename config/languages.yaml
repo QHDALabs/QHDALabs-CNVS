@@ -14,7 +14,13 @@ languages:
     name: Estonian
   - code: uk
     name: Ukrainian
+  - code: ro
+    name: Romanian
+  - code: ka
+    name: Georgian
+  - code: be
+    name: Belarusian
   - code: ru
     name: Russian
 
-# Extend this list based on event-specific country coverage.
+# MVP language catalog; extend only through a reviewed scope change.

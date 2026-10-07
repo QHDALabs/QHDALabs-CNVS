@@ -36,3 +36,4 @@ Desktop.ini
 data/
 reports/generated/
 *.log
+!log.log

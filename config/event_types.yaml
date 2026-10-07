@@ -1,0 +1,16 @@
+schema_version: "0.1"
+scope: mvp
+supported_event_types:
+  - MILITARY
+  - SABOTAGE
+  - INFRASTRUCTURE
+  - CYBER
+  - MARITIME
+  - AVIATION
+  - DIPLOMATIC
+  - POLITICAL
+  - ENERGY
+out_of_scope_event_types:
+  - INDUSTRIAL
+  - NATURAL
+  - OTHER

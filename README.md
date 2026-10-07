@@ -33,6 +33,8 @@ implementation phases.
 ├── MANIFEST.md
 ├── ARCHITECTURE.md
 ├── AGENT.md              # Working guidance for AI coding agents
+├── log.log               # Completed work and roadmap to the MVP
+├── docs/MVP_REQUIREMENTS.md # Confirmed MVP scope and acceptance criteria
 ├── CONTRIBUTING.md       # Contribution and validation guidance
 ├── LICENSE               # MIT License
 ├── SECURITY.md           # Private vulnerability reporting
@@ -59,7 +61,12 @@ implementation phases.
 The component directories are intentionally lightweight Python package
 boundaries; no production pipeline or infrastructure dependency is implied.
 Their responsibilities and the canonical record shapes are described in
-[docs/DATA_MODEL.md](./docs/DATA_MODEL.md).
+[docs/DATA_MODEL.md](./docs/DATA_MODEL.md). Confirmed MVP scope and measurable
+acceptance criteria are in [docs/MVP_REQUIREMENTS.md](./docs/MVP_REQUIREMENTS.md).
+
+Completed repository work and the staged plan to reach the MVP are tracked in
+[log.log](./log.log). Planned capabilities in that log are not implemented
+unless their status is explicitly updated.
 
 ## Example records
 

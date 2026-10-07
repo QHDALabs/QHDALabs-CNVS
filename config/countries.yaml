@@ -1,33 +1,39 @@
-# Illustrative working set only. Select coverage dynamically for each event.
+# MVP starting catalog. Select event-relevant coverage dynamically.
 schema_version: "0.1"
 countries:
   - code: PL
     name: Poland
+    languages: [pl]
   - code: DE
     name: Germany
+    languages: [de]
   - code: FR
     name: France
+    languages: [fr]
   - code: GB
     name: United Kingdom
+    languages: [en]
   - code: FI
     name: Finland
+    languages: [fi]
   - code: EE
     name: Estonia
+    languages: [et]
   - code: UA
     name: Ukraine
+    languages: [uk, ru]
   - code: MD
     name: Moldova
+    languages: [ro, ru]
   - code: GE
     name: Georgia
-  - code: AM
-    name: Armenia
-  - code: AZ
-    name: Azerbaijan
+    languages: [ka, ru]
   - code: BY
     name: Belarus
+    languages: [be, ru]
   - code: RU
     name: Russia
+    languages: [ru]
   - code: US
     name: United States
-  - code: TR
-    name: Türkiye
+    languages: [en]

@@ -1,0 +1,311 @@
+CNVS PROJECT TASK LOG
+====================
+
+Purpose
+-------
+Track completed repository work and the implementation stages required to
+reach the first operational CNVS MVP. This file is a project roadmap, not proof
+that planned capabilities have been implemented.
+
+Status key: DONE = completed; TODO = not started; IN PROGRESS = active.
+Last updated: 2026-10-07
+Current project status: ARCHITECTURE SCAFFOLD; MVP NOT IMPLEMENTED
+
+
+COMPLETED
+=========
+
+[DONE] Read and record project mission and analytical principles
+       Reference: MANIFEST.md
+       Outcome: Established evidence-first, human-in-the-loop principles;
+       kept repetition distinct from independent confirmation.
+
+[DONE] Read and record system architecture and MVP scope
+       Reference: ARCHITECTURE.md
+       Outcome: Recorded proposed components, processing pipeline, MVP flow,
+       quality gates and architectural invariants.
+
+[DONE] Create initial repository scaffold
+       Outcome: Added component boundaries for ingestion, normalization,
+       extraction, provenance, evidence, analysis, scoring, retrieval,
+       reporting, API, workers and analyst UI.
+
+[DONE] Add initial project documentation
+       Outcome: Added README.md, data model, scoring, source policy, analyst
+       guide and security guidance.
+
+[DONE] Add initial configuration and record contracts
+       Outcome: Added illustrative YAML configuration and JSON Schemas for
+       events, sources, claims and evidence.
+
+[DONE] Add synthetic linked example records
+       Outcome: Added example event, source, claim, evidence and report.
+
+[DONE] Add fixture checks
+       Outcome: Added standard-library tests for JSON parsing, required fields
+       and cross-record references.
+
+[DONE] Add repository governance baseline
+       Outcome: Added .gitignore, AGENT.md, CONTRIBUTING.md, SECURITY.md,
+       MIT LICENSE, GitHub Actions test workflow, Dependabot configuration,
+       issue forms and pull request template.
+
+[DONE] Verify current scaffold
+       Outcome: Fixture tests passed (3 tests); YAML configuration parsed
+       successfully. These checks validate the scaffold only, not analytical
+       correctness or an operational pipeline.
+
+[DONE] Create local Python virtual environment
+       Outcome: Local .venv created and intentionally excluded from version
+       control.
+
+[DONE] Define MVP scope, requirements and acceptance criteria
+       Reference: docs/MVP_REQUIREMENTS.md
+       Outcome: Confirmed intake types, initial 12-country/11-language catalog,
+       event categories, analyst/internal-reader/admin roles, internal report
+       audience, source-access limits, manual administrator deletion policy,
+       non-goals and 16 testable MVP acceptance criteria.
+       Configuration: config/countries.yaml, config/languages.yaml,
+       config/event_types.yaml and config/source_types.yaml.
+       Validation: Parsed YAML configuration and checked exact country,
+       language, event-type and source-type sets against the decision record.
+
+
+MVP IMPLEMENTATION ROADMAP
+=========================
+
+Stage 1 — Define MVP requirements and acceptance criteria
+---------------------------------------------------------
+Status: DONE
+Tasks:
+- Confirm RSS/public URL intake, languages, event categories and initial
+  country catalog with the project owner.
+- Define analyst/reviewer/reader/admin roles and internal report audience.
+- Document retention/deletion, privacy and lawful-collection constraints.
+- Publish measurable acceptance criteria and explicit MVP non-goals.
+Done when:
+- Confirmed requirements, constraints and non-goals are documented in
+  docs/MVP_REQUIREMENTS.md and aligned with the MVP configuration.
+- Acceptance criteria are observable and testable without subjective claims
+  such as "the system verifies truth".
+
+Stage 2 — Select and establish the minimal runtime architecture
+--------------------------------------------------------------
+Status: TODO
+Tasks:
+- Select the initial Python application structure and supported runtime.
+- Decide whether the first usable MVP needs an API, a command-line workflow,
+  or both; keep infrastructure proportionate to the use case.
+- Establish reproducible local development, configuration loading and
+  environment-variable handling.
+- Add dependency and development setup documentation.
+Done when:
+- A clean checkout can be set up and run using documented steps.
+- No secrets or machine-specific configuration are required in source control.
+
+Stage 3 — Implement canonical records and persistent storage
+------------------------------------------------------------
+Status: TODO
+Tasks:
+- Implement typed models for events, sources, claims and evidence based on
+  schemas/ and docs/DATA_MODEL.md.
+- Add schema validation and explicit schema-version handling.
+- Implement database migrations and persistence for canonical records.
+- Preserve raw source snapshots as immutable records or objects, with links
+  from normalized records to the retained original.
+- Track creation/update times and version analytical changes for reconstruction.
+Done when:
+- Valid records can be saved, retrieved and rejected with actionable errors
+  when malformed.
+- A stored assessment can be reconstructed from versioned linked records.
+- Raw source content is not silently overwritten by normalization or correction.
+
+Stage 4 — Build source registry and collection policy
+-----------------------------------------------------
+Status: TODO
+Tasks:
+- Define a source registry with publisher, source class, country, language,
+  access method and collection constraints.
+- Establish a reviewed, event-relevant initial source set.
+- Implement RSS feed and URL intake with timestamps, origin identifiers and
+  collection results.
+- Record failures, retries and access restrictions explicitly.
+Done when:
+- An analyst can configure an approved RSS/URL source and inspect each
+  collection result and failure.
+- Collected content is retained with auditable source provenance.
+
+Stage 5 — Normalize, identify language and deduplicate sources
+--------------------------------------------------------------
+Status: TODO
+Tasks:
+- Preserve original text alongside normalized text.
+- Detect or record language and retain translation provenance.
+- Normalize timestamps, URLs and publisher metadata without losing original
+  values.
+- Detect exact duplicates and likely syndication/republication relationships.
+- Keep uncertain duplicate and dependency decisions reviewable.
+Done when:
+- Repeated copies are linked to their identifiable origin where possible.
+- Duplicate detection never turns dependent copies into independent evidence.
+- Original source text and timestamps remain available.
+
+Stage 6 — Resolve events and build timelines
+--------------------------------------------
+Status: TODO
+Tasks:
+- Implement event creation and analyst-assisted event matching.
+- Link incoming sources to candidate events with traceable rationale.
+- Preserve event time, publication time and collection time independently.
+- Provide an editable chronological timeline.
+Done when:
+- An analyst can inspect, correct and audit event/source links and chronology.
+- Ambiguous event matches remain unresolved rather than being silently merged.
+
+Stage 7 — Extract claims and attribution as derived records
+----------------------------------------------------------
+Status: TODO
+Tasks:
+- Extract candidate claims, subjects, predicates, objects, modality and
+  attribution from source material.
+- Link each extracted claim to its exact source and relevant text span where
+  available.
+- Mark automated output as derived and distinguish it from analyst-reviewed
+  records.
+- Add correction, rejection and review status for candidate extractions.
+- Treat source text as untrusted input; enforce prompt-injection safeguards if
+  language models are used.
+Done when:
+- Claims are never detached from their source.
+- Analyst review can correct or reject extracted claims.
+- No automated extraction is represented as primary evidence or confirmed fact.
+
+Stage 8 — Implement provenance graph and independence groups
+------------------------------------------------------------
+Status: TODO
+Tasks:
+- Represent source-to-source citation, quotation, syndication and derivation
+  links.
+- Record the earliest identifiable origin and uncertainty about origin.
+- Assign and review evidence independence groups.
+- Expose the rationale and supporting links behind independence decisions.
+Done when:
+- Analysts can trace a claim back through its known source chain.
+- Repeated reports from one origin are not counted as independent confirmation.
+- Unknown or uncertain source relationships are explicitly represented.
+
+Stage 9 — Record evidence and contradictions
+--------------------------------------------
+Status: TODO
+Tasks:
+- Implement evidence records for direct observations and relevant primary
+  material, including collection time, event time, directness and verification
+  state.
+- Link evidence to claims as supporting, contradicting or not directly
+  relevant.
+- Record analyst notes and verification decisions with provenance.
+- Represent missing, conflicting and insufficient evidence explicitly.
+Done when:
+- Each evidence item has traceable origin and verification status.
+- Claim support and contradiction are inspectable and not inferred from article
+  volume alone.
+
+Stage 10 — Build the national information matrix
+------------------------------------------------
+Status: TODO
+Tasks:
+- Select country coverage dynamically for each event from a reviewed country
+  and language configuration.
+- Summarize reporting, institutional statements, primary evidence, dominant
+  frame, attribution and confidence by country.
+- Show coverage gaps and source dependencies alongside comparisons.
+Done when:
+- The MVP supports a reviewed initial set of 10–15 countries.
+- Country comparisons distinguish reporting volume from independent evidence
+  and do not treat a country as inherently correct.
+
+Stage 11 — Produce analyst-reviewed reports
+-------------------------------------------
+Status: TODO
+Tasks:
+- Generate Markdown and HTML reports from linked, versioned records.
+- Separate FACT, CLAIM, ASSESSMENT, CONFIDENCE and GAP sections.
+- Show occurrence, method and attribution confidence separately.
+- Include source provenance, independence groups, contradictions, timeline and
+  information gaps.
+- Require documented human review before high-impact publication.
+Done when:
+- A reviewed event can be exported as a reproducible report with linked sources
+  and evidence.
+- Unresolved attribution and uncertainty are preserved in rendered output.
+
+Stage 12 — Operational quality, security and reliability
+---------------------------------------------------------
+Status: TODO
+Tasks:
+- Add tests for ingestion, normalization, deduplication, extraction, provenance,
+  evidence linking, reporting and failure paths.
+- Add structured logs and basic metrics for collection and processing failures.
+- Implement timeouts, bounded retries and visible partial-failure reporting.
+- Validate inputs; protect credentials; isolate risky document parsing.
+- Review data access, retention, backups and audit requirements.
+- Enforce the architecture quality gates for provenance, independence,
+  evidence, attribution, contradiction, time, uncertainty and human review.
+Done when:
+- Failure of a source or external provider is visible and does not silently
+  produce a success-shaped result.
+- Critical analytical invariants are covered by automated tests and documented
+  analyst procedures.
+- Security and privacy review is complete for the intended MVP deployment.
+
+Stage 13 — MVP release readiness
+-------------------------------
+Status: TODO
+Tasks:
+- Run an end-to-end exercise on synthetic or explicitly authorized material.
+- Verify the complete RSS/URL-to-reviewed-report workflow.
+- Test the documented setup from a clean environment and run CI.
+- Review schemas, configuration, retention policy and analyst guide.
+- Document known limitations, deployment instructions and rollback/recovery.
+Done when:
+- Every capability in the MVP scope is implemented and demonstrated.
+- The acceptance criteria from Stage 1 pass.
+- Human reviewers can trace report statements to claims, sources and evidence.
+- Release notes clearly state limitations; no deferred capability is claimed.
+
+
+MVP EXIT CHECKLIST
+==================
+
+[ ] RSS and URL collection works for the approved source set.
+[ ] Collection scope, country/language catalog and event categories match
+    docs/MVP_REQUIREMENTS.md.
+[ ] Raw collected material and provenance are retained.
+[ ] Initial multilingual source workflow is supported.
+[ ] Source duplicates and known syndication are linked.
+[ ] Claims and attribution are extracted or entered and linked to sources.
+[ ] Analysts can inspect and correct candidate claims.
+[ ] Basic source graph and evidence independence groups are available.
+[ ] Evidence, contradictions and unresolved gaps are represented.
+[ ] Event timeline is available with distinct event/publication/collection times.
+[ ] National information matrix supports the selected 10–15 countries.
+[ ] Markdown and HTML reports are generated from versioned records.
+[ ] High-impact reports require and record human review.
+[ ] Tests, security safeguards, documented setup and CI pass.
+[ ] No repetition is reported as independent confirmation.
+[ ] Occurrence, method and attribution remain separate confidence dimensions.
+
+
+EXPLICITLY DEFERRED BEYOND MVP
+==============================
+
+- Full EU and European NATO coverage and broader strategic-neighborhood
+  expansion.
+- Automated narrative clustering and advanced contradiction detection.
+- Advanced graph analytics, semantic search and analyst dashboard.
+- Near-real-time monitoring and specialized satellite/AIS integrations.
+- Model ensembles, calibrated uncertainty, anomaly detection and early warning.
+- GEWS/Sentinel integrations and advanced collaborative analyst workflows.
+
+These capabilities belong to later phases in ARCHITECTURE.md and must not be
+treated as MVP-complete by default.

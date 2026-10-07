@@ -1,0 +1,15 @@
+schema_version: "0.1"
+scope: mvp
+supported_source_types:
+  - id: RSS
+    access: PUBLIC
+  - id: URL
+    access: PUBLIC
+out_of_scope_source_types:
+  - SOCIAL_MEDIA
+  - AUTHENTICATED
+  - PAYWALLED
+  - THIRD_PARTY_API
+policy:
+  bypass_access_controls: false
+  archive_content_only_when_permitted: true
