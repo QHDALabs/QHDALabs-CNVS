@@ -28,9 +28,15 @@ implementation phases.
 
 ```text
 .
+├── .gitignore
 ├── README.md
 ├── MANIFEST.md
 ├── ARCHITECTURE.md
+├── AGENT.md              # Working guidance for AI coding agents
+├── CONTRIBUTING.md       # Contribution and validation guidance
+├── LICENSE               # MIT License
+├── SECURITY.md           # Private vulnerability reporting
+├── .github/              # CI, Dependabot and contribution templates
 ├── docs/                 # Data model, scoring, source policy, analyst and security guides
 ├── config/               # Example country, language, source-class and scoring settings
 ├── ingestion/            # Source collection boundaries
@@ -89,12 +95,24 @@ python -m unittest discover -s tests -v
 The tests check JSON syntax, required top-level fields and cross-record
 references. They do not validate a live pipeline or analyst conclusions.
 
+## Contributing
+
+See [CONTRIBUTING.md](./CONTRIBUTING.md) for contribution and validation
+guidance. Repository-specific instructions for AI coding agents are in
+[AGENT.md](./AGENT.md). GitHub Actions runs the fixture tests on supported
+Python versions for pushes and pull requests.
+
 ## Security and analytical limitations
 
 External material is untrusted data, never executable instructions. Automated
 extraction is derived data and is not primary evidence. High-impact conclusions
-require human review. See [docs/SECURITY.md](./docs/SECURITY.md) and
+require human review. See [SECURITY.md](./SECURITY.md),
+[docs/SECURITY.md](./docs/SECURITY.md) and
 [docs/ANALYST_GUIDE.md](./docs/ANALYST_GUIDE.md).
+
+## License
+
+This project is licensed under the [MIT License](./LICENSE).
 
 ## Project motto
 

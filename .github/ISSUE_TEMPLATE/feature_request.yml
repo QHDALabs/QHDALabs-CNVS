@@ -1,0 +1,27 @@
+name: Feature request
+description: Propose a capability or improvement for CNVS.
+title: "[Feature]: "
+labels:
+  - enhancement
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem or use case
+      description: What analyst need or limitation would this address?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed change
+      description: Describe the capability and its expected behavior.
+    validations:
+      required: true
+  - type: textarea
+    id: safeguards
+    attributes:
+      label: Data, provenance and review considerations
+      description: Note effects on evidence independence, uncertainty, privacy or human review.
+    validations:
+      required: false
