@@ -192,3 +192,53 @@ a model by this workflow. An accepted or corrected candidate is still derived
 material: this stage does not promote it to a canonical claim, create
 evidence, verify its truth, or determine source independence. Those records
 and decisions require subsequent workflow stages.
+
+## Provenance graph and independence groups
+
+Stage 8 records directed relationships between normalized documents, each of
+which retains its source ID. The direction is from the document being
+investigated to an upstream document (`document → upstream document`), with
+relationship types `CITES`, `QUOTES`, `SYNDICATED` and `DERIVED_FROM`. Thus the
+graph preserves article-level lineage while exposing the source-to-source
+chain. A link starts pending and stores its proposer and rationale. An
+append-only review marks it `CONFIRMED`, `REJECTED` or `UNRESOLVED`; only
+currently confirmed edges participate in graph traversal. Confirmed cycles
+are rejected by both the API and a database trigger. Rejected or unresolved
+edges remain auditable and are not traversed as established lineage.
+
+`provenance graph DOCUMENT-ID` displays the confirmed upstream closure.
+`provenance claim CANDIDATE-ID` resolves a Stage 7 extraction candidate to
+its source document and displays the same graph. Links preserve both document
+and source IDs so analysts can see syndicated or cited source chains without
+merging records.
+
+Origin knowledge is recorded separately as append-only analyst assessments:
+`IDENTIFIED`, `UNCERTAIN` or `UNKNOWN`. An identified earliest origin must be
+another normalized document reachable from the assessed document through the
+provided, currently confirmed supporting links. `UNKNOWN` cannot name an
+origin; `UNCERTAIN` can record a possible earliest origin while stating why
+the chain remains incomplete. Each assessment retains its rationale,
+analyst/time and supporting link IDs. No origin is inferred from missing
+records.
+
+Independence memberships can be proposed for a normalized `DOCUMENT`,
+registered/collected `SOURCE`, or canonical `EVIDENCE` record. A proposal is
+not an active group membership until a separate reviewer records `ACCEPTED`;
+`REJECTED` and `UNRESOLVED` are also append-only review outcomes. A member
+cannot have two simultaneously accepted groups. To reconsider an accepted
+membership, append an `UNRESOLVED` review before proposing a replacement.
+Review decisions store the reviewer, rationale and any confirmed provenance
+links that support the grouping. Those links must involve the assigned
+member. `provenance assignments --status ACCEPTED` lists only accepted
+memberships; the full history remains available.
+
+Group IDs are analyst-defined labels, not calibrated evidence counts.
+Membership does not establish factual truth or source reliability, and the
+software does not automatically infer independence, transfer Stage 5
+duplicate decisions into this graph, merge sources, or compute confirmation
+counts. A confirmed syndication link is important context; existing accepted
+group assignments in its connected chain must agree. If a proposed link would
+connect different accepted groups, resolve and re-review those assignments
+before confirming the link. Analysts remain responsible for the rationale.
+Until a dependency is resolved, represent it as `UNRESOLVED` or record origin
+uncertainty rather than treating the reporting as independent.

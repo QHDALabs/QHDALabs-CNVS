@@ -25,6 +25,16 @@ one dependent information chain unless separate evidence is demonstrated.
 Uncertain dependencies should be marked uncertain rather than assumed
 independent.
 
+The provenance workflow records document-to-document `CITES`, `QUOTES`,
+`SYNDICATED` and `DERIVED_FROM` links as analyst-reviewed proposals. Only
+confirmed links form the established graph; duplicate and syndication
+similarity candidates remain separate from that graph until reviewed. For a
+confirmed syndication chain, existing accepted group assignments must not
+conflict. If a newly proposed syndication link would connect different
+accepted groups, resolve and re-review the assignments before confirming it.
+The system does not infer group membership or calculate independent
+confirmation counts.
+
 `config/source_classes.yaml` and `examples/source.json` are illustrative
 starting points, not an endorsement or reliability ranking of any source.
 Source quality must be assessed in context and reviewed by an analyst.

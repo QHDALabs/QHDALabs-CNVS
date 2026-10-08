@@ -15,7 +15,10 @@ from cnvs.models import (
     DuplicateRelationship,
     Event,
     EventSourceMatch,
+    IndependenceAssignment,
     NormalizedDocument,
+    ProvenanceLink,
+    ProvenanceOriginAssessment,
     TimelineEntry,
     TranslationRecord,
 )
@@ -266,6 +269,123 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     claim_history.add_argument("candidate_id")
     claim_history.add_argument("--database", help="SQLite database file.")
+
+    provenance_parser = commands.add_parser(
+        "provenance", help="Trace source dependencies and review evidence independence."
+    )
+    provenance_commands = provenance_parser.add_subparsers(
+        dest="provenance_command", required=True
+    )
+    provenance_link = provenance_commands.add_parser(
+        "link", help="Propose a directed document-to-origin provenance link."
+    )
+    provenance_link.add_argument("document_id")
+    provenance_link.add_argument("upstream_document_id")
+    provenance_link.add_argument(
+        "--type",
+        required=True,
+        choices=("CITES", "QUOTES", "SYNDICATED", "DERIVED_FROM"),
+    )
+    provenance_link.add_argument("--proposed-by", required=True)
+    provenance_link.add_argument("--rationale", required=True)
+    provenance_link.add_argument("--proposed-at")
+    provenance_link.add_argument("--database", help="SQLite database file.")
+    provenance_review_link = provenance_commands.add_parser(
+        "review-link", help="Confirm, reject or defer a provenance link."
+    )
+    provenance_review_link.add_argument("link_id")
+    provenance_review_link.add_argument(
+        "--decision", required=True, choices=("CONFIRMED", "REJECTED", "UNRESOLVED")
+    )
+    provenance_review_link.add_argument("--reviewer", required=True)
+    provenance_review_link.add_argument("--rationale", required=True)
+    provenance_review_link.add_argument("--reviewed-at")
+    provenance_review_link.add_argument("--database", help="SQLite database file.")
+    provenance_links = provenance_commands.add_parser(
+        "links", help="List provenance links and their review states."
+    )
+    provenance_links.add_argument("--document-id")
+    provenance_links.add_argument(
+        "--type", choices=("CITES", "QUOTES", "SYNDICATED", "DERIVED_FROM")
+    )
+    provenance_links.add_argument(
+        "--status", choices=("PENDING", "CONFIRMED", "REJECTED", "UNRESOLVED")
+    )
+    provenance_links.add_argument("--database", help="SQLite database file.")
+    provenance_graph = provenance_commands.add_parser(
+        "graph", help="Trace a document through confirmed upstream source links."
+    )
+    provenance_graph.add_argument("document_id")
+    provenance_graph.add_argument("--database", help="SQLite database file.")
+    provenance_claim = provenance_commands.add_parser(
+        "claim", help="Trace an extraction candidate through its source document's graph."
+    )
+    provenance_claim.add_argument("candidate_id")
+    provenance_claim.add_argument("--database", help="SQLite database file.")
+    provenance_origin = provenance_commands.add_parser(
+        "origin", help="Record the earliest identifiable origin or its uncertainty."
+    )
+    provenance_origin.add_argument("document_id")
+    provenance_origin.add_argument(
+        "--status", required=True, choices=("IDENTIFIED", "UNCERTAIN", "UNKNOWN")
+    )
+    provenance_origin.add_argument("--earliest-origin-document-id")
+    provenance_origin.add_argument(
+        "--supporting-link", action="append", default=[], metavar="LINK-ID"
+    )
+    provenance_origin.add_argument("--analyst", required=True)
+    provenance_origin.add_argument("--rationale", required=True)
+    provenance_origin.add_argument("--assessed-at")
+    provenance_origin.add_argument("--database", help="SQLite database file.")
+    provenance_origin_history = provenance_commands.add_parser(
+        "origin-history", help="Show all origin assessments for a document."
+    )
+    provenance_origin_history.add_argument("document_id")
+    provenance_origin_history.add_argument("--database", help="SQLite database file.")
+    provenance_assign = provenance_commands.add_parser(
+        "assign",
+        help="Propose a source, document or evidence independence-group membership.",
+    )
+    provenance_assign.add_argument(
+        "--member-type", required=True, choices=("DOCUMENT", "SOURCE", "EVIDENCE")
+    )
+    provenance_assign.add_argument("--member-id", required=True)
+    provenance_assign.add_argument("--group-id", required=True)
+    provenance_assign.add_argument("--proposed-by", required=True)
+    provenance_assign.add_argument("--rationale", required=True)
+    provenance_assign.add_argument("--proposed-at")
+    provenance_assign.add_argument("--database", help="SQLite database file.")
+    provenance_review_assignment = provenance_commands.add_parser(
+        "review-assignment", help="Review an independence-group assignment."
+    )
+    provenance_review_assignment.add_argument("assignment_id")
+    provenance_review_assignment.add_argument(
+        "--decision", required=True, choices=("ACCEPTED", "REJECTED", "UNRESOLVED")
+    )
+    provenance_review_assignment.add_argument("--reviewer", required=True)
+    provenance_review_assignment.add_argument("--rationale", required=True)
+    provenance_review_assignment.add_argument(
+        "--supporting-link", action="append", default=[], metavar="LINK-ID"
+    )
+    provenance_review_assignment.add_argument("--reviewed-at")
+    provenance_review_assignment.add_argument("--database", help="SQLite database file.")
+    provenance_assignments = provenance_commands.add_parser(
+        "assignments", help="List reviewed or pending independence-group assignments."
+    )
+    provenance_assignments.add_argument("--group-id")
+    provenance_assignments.add_argument(
+        "--member-type", choices=("DOCUMENT", "SOURCE", "EVIDENCE")
+    )
+    provenance_assignments.add_argument("--member-id")
+    provenance_assignments.add_argument(
+        "--status", choices=("PENDING", "ACCEPTED", "REJECTED", "UNRESOLVED")
+    )
+    provenance_assignments.add_argument("--database", help="SQLite database file.")
+    provenance_assignment_history = provenance_commands.add_parser(
+        "assignment-history", help="Show an assignment and its append-only reviews."
+    )
+    provenance_assignment_history.add_argument("assignment_id")
+    provenance_assignment_history.add_argument("--database", help="SQLite database file.")
     return parser
 
 
@@ -447,6 +567,57 @@ def _print_claim_extraction(candidate: ClaimExtraction) -> None:
         )
     if candidate.correction_payload is not None:
         print(f"  latest_correction={candidate.correction_payload}")
+
+
+def _print_provenance_link(link: ProvenanceLink) -> None:
+    print(
+        f"{link.link_id} {link.relationship_type} "
+        f"{link.document_id} [{link.source_id}] -> "
+        f"{link.upstream_document_id} [{link.upstream_source_id}] "
+        f"status={link.review_status}"
+    )
+    print(
+        f"  proposed_by={link.proposed_by} proposed_at={link.proposed_at} "
+        f"rationale={link.rationale!r}"
+    )
+    if link.review_status != "PENDING":
+        print(
+            f"  reviewer={link.reviewed_by} reviewed_at={link.reviewed_at} "
+            f"review_rationale={link.review_rationale!r}"
+        )
+
+
+def _print_provenance_origin(origin: ProvenanceOriginAssessment) -> None:
+    print(
+        f"{origin.assessment_id} document={origin.document_id} "
+        f"origin={origin.origin_status} "
+        f"earliest_origin={origin.earliest_origin_document_id}"
+    )
+    print(
+        f"  analyst={origin.assessed_by} assessed_at={origin.assessed_at} "
+        f"rationale={origin.rationale!r}"
+    )
+    print(f"  supporting_links={','.join(origin.supporting_link_ids) or 'none'}")
+
+
+def _print_independence_assignment(assignment: IndependenceAssignment) -> None:
+    print(
+        f"{assignment.assignment_id} {assignment.member_type}={assignment.member_id} "
+        f"group={assignment.group_id} status={assignment.review_status}"
+    )
+    print(
+        f"  proposed_by={assignment.proposed_by} proposed_at={assignment.proposed_at} "
+        f"rationale={assignment.rationale!r}"
+    )
+    if assignment.review_status != "PENDING":
+        print(
+            f"  reviewer={assignment.reviewed_by} reviewed_at={assignment.reviewed_at} "
+            f"review_rationale={assignment.review_rationale!r}"
+        )
+        print(
+            "  supporting_links="
+            f"{','.join(assignment.supporting_link_ids) or 'none'}"
+        )
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -653,6 +824,161 @@ def main(argv: Sequence[str] | None = None) -> int:
             history = database.claim_extraction_history(args.candidate_id)
             for candidate in history:
                 _print_claim_extraction(candidate)
+            return 0
+
+        if args.command == "provenance":
+            settings = Settings.from_environment(
+                database_path_override=args.database
+            )
+            database = Database(settings.database_path)
+            command = args.provenance_command
+            if command == "link":
+                proposed_at = args.proposed_at or (
+                    datetime.now(timezone.utc)
+                    .isoformat(timespec="seconds")
+                    .replace("+00:00", "Z")
+                )
+                link = database.propose_provenance_link(
+                    document_id=args.document_id,
+                    upstream_document_id=args.upstream_document_id,
+                    relationship_type=args.type,
+                    proposed_by=args.proposed_by,
+                    proposed_at=proposed_at,
+                    rationale=args.rationale,
+                )
+                _print_provenance_link(link)
+                return 0
+            if command == "review-link":
+                reviewed_at = args.reviewed_at or (
+                    datetime.now(timezone.utc)
+                    .isoformat(timespec="seconds")
+                    .replace("+00:00", "Z")
+                )
+                link = database.review_provenance_link(
+                    link_id=args.link_id,
+                    decision=args.decision,
+                    reviewed_by=args.reviewer,
+                    reviewed_at=reviewed_at,
+                    rationale=args.rationale,
+                )
+                _print_provenance_link(link)
+                return 0
+            if command == "links":
+                links = database.provenance_links(
+                    document_id=args.document_id,
+                    relationship_type=args.type,
+                    review_status=args.status,
+                )
+                if not links:
+                    print("No provenance links found.")
+                for link in links:
+                    _print_provenance_link(link)
+                return 0
+            if command == "graph":
+                links = database.provenance_graph(args.document_id)
+                print(f"Confirmed upstream provenance graph for {args.document_id}:")
+                if not links:
+                    print("  No confirmed upstream provenance links.")
+                for link in links:
+                    _print_provenance_link(link)
+                origin = database.latest_provenance_origin(args.document_id)
+                if origin is None:
+                    print("Origin assessment: not yet recorded.")
+                else:
+                    print("Latest origin assessment:")
+                    _print_provenance_origin(origin)
+                return 0
+            if command == "claim":
+                history = database.claim_extraction_history(args.candidate_id)
+                candidate = history[-1]
+                links = database.provenance_graph(candidate.document_id)
+                print(
+                    f"Confirmed provenance graph for claim candidate "
+                    f"{candidate.candidate_id} (document {candidate.document_id}):"
+                )
+                if not links:
+                    print("  No confirmed upstream provenance links.")
+                for link in links:
+                    _print_provenance_link(link)
+                origin = database.latest_provenance_origin(candidate.document_id)
+                if origin is None:
+                    print("Origin assessment: not yet recorded.")
+                else:
+                    print("Latest origin assessment:")
+                    _print_provenance_origin(origin)
+                return 0
+            if command == "origin":
+                assessed_at = args.assessed_at or (
+                    datetime.now(timezone.utc)
+                    .isoformat(timespec="seconds")
+                    .replace("+00:00", "Z")
+                )
+                origin = database.record_provenance_origin(
+                    document_id=args.document_id,
+                    origin_status=args.status,
+                    earliest_origin_document_id=args.earliest_origin_document_id,
+                    assessed_by=args.analyst,
+                    assessed_at=assessed_at,
+                    rationale=args.rationale,
+                    supporting_link_ids=args.supporting_link,
+                )
+                _print_provenance_origin(origin)
+                return 0
+            if command == "origin-history":
+                history = database.provenance_origin_history(args.document_id)
+                if not history:
+                    print("No origin assessments recorded.")
+                for origin in history:
+                    _print_provenance_origin(origin)
+                return 0
+            if command == "assign":
+                proposed_at = args.proposed_at or (
+                    datetime.now(timezone.utc)
+                    .isoformat(timespec="seconds")
+                    .replace("+00:00", "Z")
+                )
+                assignment = database.propose_independence_assignment(
+                    group_id=args.group_id,
+                    member_type=args.member_type,
+                    member_id=args.member_id,
+                    proposed_by=args.proposed_by,
+                    proposed_at=proposed_at,
+                    rationale=args.rationale,
+                )
+                _print_independence_assignment(assignment)
+                return 0
+            if command == "review-assignment":
+                reviewed_at = args.reviewed_at or (
+                    datetime.now(timezone.utc)
+                    .isoformat(timespec="seconds")
+                    .replace("+00:00", "Z")
+                )
+                assignment = database.review_independence_assignment(
+                    assignment_id=args.assignment_id,
+                    decision=args.decision,
+                    reviewed_by=args.reviewer,
+                    reviewed_at=reviewed_at,
+                    rationale=args.rationale,
+                    supporting_link_ids=args.supporting_link,
+                )
+                _print_independence_assignment(assignment)
+                return 0
+            if command == "assignments":
+                assignments = database.independence_assignments(
+                    group_id=args.group_id,
+                    member_type=args.member_type,
+                    member_id=args.member_id,
+                    review_status=args.status,
+                )
+                if not assignments:
+                    print("No independence assignments found.")
+                for assignment in assignments:
+                    _print_independence_assignment(assignment)
+                return 0
+            for assignment in database.independence_assignment_history(
+                args.assignment_id
+            ):
+                _print_independence_assignment(assignment)
             return 0
 
         if args.command == "source":

@@ -22,6 +22,12 @@ and CLI configuration behavior.
 - Do not count repetition as independent confirmation.
 - Preserve source provenance and distinguish raw source material from derived
   output.
+- Treat citation, quotation, syndication and derivation links as proposals
+  until reviewed. Keep origin assessments and independence-group assignments
+  rationale-bearing and auditable; never infer groups from duplicate matches.
+- Keep accepted group assignments consistent across a confirmed syndication
+  chain, resolving prior assignments before confirming a newly conflicting
+  link.
 - Keep events, observations, evidence, claims, attributions and assessments
   distinct.
 - Treat attribution as a separate analytical question from whether an event

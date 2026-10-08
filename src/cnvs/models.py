@@ -277,6 +277,51 @@ class ClaimExtraction:
     correction_payload: dict[str, JsonValue] | None
 
 
+@dataclass(frozen=True)
+class ProvenanceLink:
+    link_id: str
+    document_id: str
+    source_id: str
+    upstream_document_id: str
+    upstream_source_id: str
+    relationship_type: str
+    proposed_by: str
+    proposed_at: str
+    rationale: str
+    review_status: str
+    reviewed_by: str | None
+    reviewed_at: str | None
+    review_rationale: str | None
+
+
+@dataclass(frozen=True)
+class ProvenanceOriginAssessment:
+    assessment_id: str
+    document_id: str
+    origin_status: str
+    earliest_origin_document_id: str | None
+    assessed_by: str
+    assessed_at: str
+    rationale: str
+    supporting_link_ids: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class IndependenceAssignment:
+    assignment_id: str
+    group_id: str
+    member_type: str
+    member_id: str
+    proposed_by: str
+    proposed_at: str
+    rationale: str
+    review_status: str
+    reviewed_by: str | None
+    reviewed_at: str | None
+    review_rationale: str | None
+    supporting_link_ids: tuple[str, ...]
+
+
 CanonicalRecord: TypeAlias = Event | Source | Claim | Evidence | Assessment
 RECORD_TYPES: dict[str, type[CanonicalRecord]] = {
     model.record_type: model

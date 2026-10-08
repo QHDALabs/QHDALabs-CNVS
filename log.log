@@ -256,7 +256,7 @@ changed Python files.
 
 Stage 8 — Implement provenance graph and independence groups
 ------------------------------------------------------------
-Status: TODO
+Status: DONE
 Tasks:
 - Represent source-to-source citation, quotation, syndication and derivation
   links.
@@ -267,6 +267,21 @@ Done when:
 - Analysts can trace a claim back through its known source chain.
 - Repeated reports from one origin are not counted as independent confirmation.
 - Unknown or uncertain source relationships are explicitly represented.
+Outcome: Added an analyst-reviewed, acyclic provenance graph for normalized
+documents with CITES, QUOTES, SYNDICATED and DERIVED_FROM relationships.
+Claim candidates resolve to their source document and confirmed upstream
+closure. Append-only origin assessments record IDENTIFIED, UNCERTAIN or
+UNKNOWN states and require confirmed supporting paths for identified origins.
+Document, source and evidence memberships can be proposed and separately
+reviewed into rationale-bearing independence groups, with auditable support.
+Confirmed syndication chains cannot retain conflicting accepted group IDs;
+API checks and SQLite triggers enforce this when reviewing either a link or an
+assignment. No relationship, origin or independence group is inferred from
+duplicate candidates, and no confirmation counts are calculated.
+Validation: All 82 tests pass on Python 3.14.5 and Python 3.12.0. The wheel
+build and isolated target installation pass; the installed package imports
+migration 006 and applies all six migrations, and its CLI starts successfully.
+Pylance and workspace problem checks report no errors in changed Python files.
 
 Stage 9 — Record evidence and contradictions
 --------------------------------------------

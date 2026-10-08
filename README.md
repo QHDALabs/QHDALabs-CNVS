@@ -10,7 +10,8 @@ independent.
 > configuration, manage a local SQLite database, collect approved public RSS
 > feeds and URLs, create versioned event records, review source-to-event
 > matches, maintain auditable event timelines, and record source-grounded
-> derived claim candidates for analyst review. The checked-in source registry
+> derived claim candidates, provenance links and reviewed independence-group
+> assignments. The checked-in source registry
 > contains only a disabled synthetic example: no live source has been reviewed
 > or approved. CNVS is not a verification engine or full analyst application.
 
@@ -108,12 +109,13 @@ collects approved public RSS/URL sources, preserves normalized document text
 and provenance, records translations, and surfaces duplicate/syndication
 candidates for analyst review. It also supports creating and revising event
 records, proposing and reviewing source-document matches, and auditing
-chronology corrections, and recording/reviewing source-grounded derived claim
-candidates. Candidate matches remain unresolved until explicitly reviewed;
-events and sources are never silently merged. CNVS does not run an automatic
-NLP/LLM extractor, and accepted extraction candidates are not canonical claims
-or confirmed facts. Cross-national analysis and operational report generation
-are not implemented. See [docs/DEVELOPMENT.md](./docs/DEVELOPMENT.md) for
+chronology corrections, recording/reviewing source-grounded derived claim
+candidates, and tracing source dependencies with analyst-reviewed independence
+groups. Candidate matches remain unresolved until explicitly reviewed; events
+and sources are never silently merged. CNVS does not run an automatic NLP/LLM
+extractor, and accepted extraction candidates are not canonical claims or
+confirmed facts. Cross-national analysis and operational report generation are
+not implemented. See [docs/DEVELOPMENT.md](./docs/DEVELOPMENT.md) for
 platform-specific setup and environment variable details.
 
 ## Configuration
@@ -146,6 +148,13 @@ python -m cnvs claim extract CNVS-EVT-2026-10-08-0001 DOCUMENT-ID --file candida
 python -m cnvs claim list --event-id CNVS-EVT-2026-10-08-0001 --status PENDING
 python -m cnvs claim review CANDIDATE-ID --decision ACCEPTED --reviewer reviewer --rationale "Fields match the attributed source statement"
 python -m cnvs claim history CANDIDATE-ID
+python -m cnvs provenance link DOCUMENT-ID UPSTREAM-DOCUMENT-ID --type SYNDICATED --proposed-by analyst --rationale "Publisher credits the upstream report"
+python -m cnvs provenance review-link LINK-ID --decision CONFIRMED --reviewer reviewer --rationale "The byline identifies the originating report"
+python -m cnvs provenance claim CANDIDATE-ID
+python -m cnvs provenance origin DOCUMENT-ID --status IDENTIFIED --earliest-origin-document-id ORIGIN-DOCUMENT-ID --supporting-link LINK-ID --analyst analyst --rationale "Confirmed source chain reaches this report"
+python -m cnvs provenance assign --member-type DOCUMENT --member-id DOCUMENT-ID --group-id IG-001 --proposed-by analyst --rationale "This article republishes the linked report"
+python -m cnvs provenance review-assignment ASSIGNMENT-ID --decision ACCEPTED --reviewer reviewer --rationale "The shared chain is supported by the confirmed link" --supporting-link LINK-ID
+python -m cnvs provenance assignments --group-id IG-001 --status ACCEPTED
 ```
 
 Normalization requires a retained source snapshot, so it is unavailable when
@@ -173,6 +182,19 @@ not that the proposition is true. These remain derived candidates and are not
 promoted into canonical claims or evidence. There is no automatic NLP/LLM
 extraction; imported source text is treated as untrusted data.
 
+Provenance links point from a normalized document to an upstream document and
+preserve the associated source IDs. `CITES`, `QUOTES`, `SYNDICATED` and
+`DERIVED_FROM` links are proposals until a reviewer confirms them; confirmed
+links form the acyclic graph used by `provenance graph` and `provenance claim`.
+Record the origin as `IDENTIFIED`, `UNCERTAIN` or `UNKNOWN`; an identified
+origin must be reachable through the confirmed supporting links. Independence
+group membership is proposed for a document, source or evidence record and
+becomes active only after reviewer acceptance. Each decision retains its
+rationale and any confirmed provenance links used to support it. Known
+relationships do not automatically assign groups or compute confirmation
+counts; repeated or syndicated reporting must not be treated as independent
+without analyst review. See [docs/SOURCE_POLICY.md](./docs/SOURCE_POLICY.md).
+
 ## Validation
 
 The test runner uses Python's standard-library `unittest`. Install the project
@@ -191,9 +213,11 @@ translation provenance, exact and likely duplicate relationships, immutable
 normalized records, event lifecycle and reviewable source matching, distinct
 event/publication/collection times, timeline corrections and their history,
 source-grounded claim candidate spans, corrections and append-only reviews,
-checksummed migrations, record revision history, source snapshots and
-assessment reconstruction. They do not validate live source availability,
-source rights, analyst conclusions or source approvals.
+provenance graph traversal and cycle prevention, explicit origin uncertainty,
+reviewed independence groups and their supporting links, checksummed
+migrations, record revision history, source snapshots and assessment
+reconstruction. They do not validate live source availability, source rights,
+analyst conclusions or source approvals.
 
 ## Contributing
 

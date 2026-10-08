@@ -21,8 +21,11 @@ from cnvs.models import (
     DuplicateRelationship,
     Event,
     EventSourceMatch,
+    IndependenceAssignment,
     JsonValue,
     NormalizedDocument,
+    ProvenanceLink,
+    ProvenanceOriginAssessment,
     RawSnapshot,
     Source,
     TimelineEntry,
@@ -1984,6 +1987,957 @@ class Database:
                 ),
             )
         return self.get_duplicate_relationship(relationship_id)
+
+    @staticmethod
+    def _provenance_link_select() -> str:
+        return """
+            SELECT link.*,
+                document.source_id,
+                upstream.source_id AS upstream_source_id,
+                review.decision AS review_status,
+                review.reviewed_by,
+                review.reviewed_at,
+                review.rationale AS review_rationale
+            FROM provenance_links AS link
+            JOIN normalized_documents AS document
+                ON document.document_id = link.document_id
+            JOIN normalized_documents AS upstream
+                ON upstream.document_id = link.upstream_document_id
+            LEFT JOIN provenance_link_reviews AS review
+                ON review.review_id = (
+                    SELECT latest.review_id
+                    FROM provenance_link_reviews AS latest
+                    WHERE latest.link_id = link.link_id
+                    ORDER BY latest.rowid DESC
+                    LIMIT 1
+                )
+        """
+
+    @staticmethod
+    def _provenance_link_from_row(row: sqlite3.Row) -> ProvenanceLink:
+        return ProvenanceLink(
+            link_id=row["link_id"],
+            document_id=row["document_id"],
+            source_id=row["source_id"],
+            upstream_document_id=row["upstream_document_id"],
+            upstream_source_id=row["upstream_source_id"],
+            relationship_type=row["relationship_type"],
+            proposed_by=row["proposed_by"],
+            proposed_at=row["proposed_at"],
+            rationale=row["rationale"],
+            review_status=row["review_status"] or "PENDING",
+            reviewed_by=row["reviewed_by"],
+            reviewed_at=row["reviewed_at"],
+            review_rationale=row["review_rationale"],
+        )
+
+    def propose_provenance_link(
+        self,
+        *,
+        document_id: str,
+        upstream_document_id: str,
+        relationship_type: str,
+        proposed_by: str,
+        proposed_at: str,
+        rationale: str,
+    ) -> ProvenanceLink:
+        relationship_types = {"CITES", "QUOTES", "SYNDICATED", "DERIVED_FROM"}
+        if relationship_type not in relationship_types:
+            raise StorageError(
+                f"Unsupported provenance relationship type: {relationship_type}."
+            )
+        if document_id == upstream_document_id:
+            raise StorageError("A provenance link cannot point a document to itself.")
+        if not proposed_by.strip() or not rationale.strip():
+            raise StorageError("A provenance link proposal needs an analyst and rationale.")
+        _validate_timestamp(proposed_at, "proposed_at")
+        link_id = uuid.uuid4().hex
+        with self._lock, self._write_transaction() as connection:
+            for candidate_document_id in (document_id, upstream_document_id):
+                exists = connection.execute(
+                    "SELECT 1 FROM normalized_documents WHERE document_id = ?",
+                    (candidate_document_id,),
+                ).fetchone()
+                if exists is None:
+                    raise StorageError(
+                        f"Normalized document {candidate_document_id} was not found."
+                    )
+            connection.execute(
+                """
+                INSERT INTO provenance_links (
+                    link_id, document_id, upstream_document_id, relationship_type,
+                    proposed_by, proposed_at, rationale
+                ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    link_id,
+                    document_id,
+                    upstream_document_id,
+                    relationship_type,
+                    proposed_by.strip(),
+                    proposed_at,
+                    rationale.strip(),
+                ),
+            )
+        return self.get_provenance_link(link_id)
+
+    def get_provenance_link(self, link_id: str) -> ProvenanceLink:
+        with self._connect() as connection:
+            row = connection.execute(
+                self._provenance_link_select() + " WHERE link.link_id = ?",
+                (link_id,),
+            ).fetchone()
+        if row is None:
+            raise StorageError(f"Provenance link {link_id} was not found.")
+        return self._provenance_link_from_row(row)
+
+    def provenance_links(
+        self,
+        *,
+        document_id: str | None = None,
+        relationship_type: str | None = None,
+        review_status: str | None = None,
+    ) -> list[ProvenanceLink]:
+        statuses = {None, "PENDING", "CONFIRMED", "REJECTED", "UNRESOLVED"}
+        relationship_types = {None, "CITES", "QUOTES", "SYNDICATED", "DERIVED_FROM"}
+        if review_status not in statuses:
+            raise ValueError("Unsupported provenance link review status.")
+        if relationship_type not in relationship_types:
+            raise ValueError("Unsupported provenance relationship type.")
+        query = self._provenance_link_select() + """
+            WHERE (? IS NULL OR link.document_id = ?
+                OR link.upstream_document_id = ?)
+              AND (? IS NULL OR link.relationship_type = ?)
+              AND (? IS NULL OR COALESCE(review.decision, 'PENDING') = ?)
+            ORDER BY link.proposed_at, link.link_id
+        """
+        with self._connect() as connection:
+            rows = connection.execute(
+                query,
+                (
+                    document_id,
+                    document_id,
+                    document_id,
+                    relationship_type,
+                    relationship_type,
+                    review_status,
+                    review_status,
+                ),
+            ).fetchall()
+        return [self._provenance_link_from_row(row) for row in rows]
+
+    def _confirmed_provenance_links(
+        self,
+        connection: sqlite3.Connection,
+        *,
+        exclude_link_id: str | None = None,
+    ) -> list[sqlite3.Row]:
+        return connection.execute(
+            """
+            SELECT link.link_id, link.document_id, link.upstream_document_id
+            FROM provenance_links AS link
+            JOIN provenance_link_reviews AS review
+                ON review.review_id = (
+                    SELECT latest.review_id
+                    FROM provenance_link_reviews AS latest
+                    WHERE latest.link_id = link.link_id
+                    ORDER BY latest.rowid DESC
+                    LIMIT 1
+                )
+            WHERE review.decision = 'CONFIRMED'
+              AND (? IS NULL OR link.link_id != ?)
+            """,
+            (exclude_link_id, exclude_link_id),
+        ).fetchall()
+
+    @staticmethod
+    def _provenance_path_exists(
+        links: list[sqlite3.Row], start_document_id: str, target_document_id: str
+    ) -> bool:
+        upstream: dict[str, list[str]] = {}
+        for link in links:
+            upstream.setdefault(link["document_id"], []).append(
+                link["upstream_document_id"]
+            )
+        pending = [start_document_id]
+        visited: set[str] = set()
+        while pending:
+            current = pending.pop()
+            if current == target_document_id:
+                return True
+            if current in visited:
+                continue
+            visited.add(current)
+            pending.extend(upstream.get(current, ()))
+        return False
+
+    def review_provenance_link(
+        self,
+        *,
+        link_id: str,
+        decision: str,
+        reviewed_by: str,
+        reviewed_at: str,
+        rationale: str,
+    ) -> ProvenanceLink:
+        if decision not in {"CONFIRMED", "REJECTED", "UNRESOLVED"}:
+            raise StorageError(f"Unsupported provenance link decision: {decision}.")
+        if not reviewed_by.strip() or not rationale.strip():
+            raise StorageError("Provenance review needs a reviewer and rationale.")
+        _validate_timestamp(reviewed_at, "reviewed_at")
+        review_id = uuid.uuid4().hex
+        with self._lock, self._write_transaction() as connection:
+            link = connection.execute(
+                """
+                SELECT document_id, upstream_document_id, relationship_type
+                FROM provenance_links WHERE link_id = ?
+                """,
+                (link_id,),
+            ).fetchone()
+            if link is None:
+                raise StorageError(f"Provenance link {link_id} was not found.")
+            if decision == "CONFIRMED":
+                if link["relationship_type"] == "SYNDICATED":
+                    groups = self._active_syndication_groups(
+                        connection,
+                        [
+                            link["document_id"],
+                            link["upstream_document_id"],
+                        ],
+                    )
+                    if len(groups) > 1:
+                        raise StorageError(
+                            "Documents in the syndication chain belong to different "
+                            "independence groups; resolve the group assignments first."
+                        )
+                confirmed = self._confirmed_provenance_links(
+                    connection, exclude_link_id=link_id
+                )
+                if self._provenance_path_exists(
+                    confirmed, link["upstream_document_id"], link["document_id"]
+                ):
+                    raise StorageError(
+                        "Confirming this provenance link would create a cycle."
+                    )
+            connection.execute(
+                """
+                INSERT INTO provenance_link_reviews (
+                    review_id, link_id, decision, reviewed_by, reviewed_at, rationale
+                ) VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    review_id,
+                    link_id,
+                    decision,
+                    reviewed_by.strip(),
+                    reviewed_at,
+                    rationale.strip(),
+                ),
+            )
+        return self.get_provenance_link(link_id)
+
+    def provenance_link_history(self, link_id: str) -> list[ProvenanceLink]:
+        with self._connect() as connection:
+            proposal = connection.execute(
+                self._provenance_link_select() + " WHERE link.link_id = ?",
+                (link_id,),
+            ).fetchone()
+            reviews = connection.execute(
+                """
+                SELECT decision, reviewed_by, reviewed_at, rationale
+                FROM provenance_link_reviews
+                WHERE link_id = ? ORDER BY rowid
+                """,
+                (link_id,),
+            ).fetchall()
+        if proposal is None:
+            raise StorageError(f"Provenance link {link_id} was not found.")
+        initial = self._provenance_link_from_row(proposal)
+        initial = ProvenanceLink(
+            **{
+                **{
+                    field: getattr(initial, field)
+                    for field in initial.__dataclass_fields__
+                },
+                "review_status": "PENDING",
+                "reviewed_by": None,
+                "reviewed_at": None,
+                "review_rationale": None,
+            }
+        )
+        return [
+            initial,
+            *(
+                ProvenanceLink(
+                    **{
+                        **{
+                            field: getattr(initial, field)
+                            for field in initial.__dataclass_fields__
+                        },
+                        "review_status": review["decision"],
+                        "reviewed_by": review["reviewed_by"],
+                        "reviewed_at": review["reviewed_at"],
+                        "review_rationale": review["rationale"],
+                    }
+                )
+                for review in reviews
+            ),
+        ]
+
+    def provenance_graph(self, document_id: str) -> list[ProvenanceLink]:
+        with self._connect() as connection:
+            exists = connection.execute(
+                "SELECT 1 FROM normalized_documents WHERE document_id = ?",
+                (document_id,),
+            ).fetchone()
+            if exists is None:
+                raise StorageError(f"Normalized document {document_id} was not found.")
+            links = self._confirmed_provenance_links(connection)
+            adjacency: dict[str, list[sqlite3.Row]] = {}
+            for link in links:
+                adjacency.setdefault(link["document_id"], []).append(link)
+            reachable: set[str] = set()
+            pending = [document_id]
+            selected_link_ids: set[str] = set()
+            while pending:
+                current = pending.pop()
+                if current in reachable:
+                    continue
+                reachable.add(current)
+                for link in adjacency.get(current, ()):
+                    selected_link_ids.add(link["link_id"])
+                    pending.append(link["upstream_document_id"])
+            if not selected_link_ids:
+                return []
+            query = self._provenance_link_select() + """
+                WHERE link.link_id IN (
+            """ + ",".join("?" for _ in selected_link_ids) + ")"
+            rows = connection.execute(
+                query, tuple(sorted(selected_link_ids))
+            ).fetchall()
+        return [self._provenance_link_from_row(row) for row in rows]
+
+    @staticmethod
+    def _provenance_origin_from_row(
+        row: sqlite3.Row, supporting_link_ids: tuple[str, ...]
+    ) -> ProvenanceOriginAssessment:
+        return ProvenanceOriginAssessment(
+            assessment_id=row["assessment_id"],
+            document_id=row["document_id"],
+            origin_status=row["origin_status"],
+            earliest_origin_document_id=row["earliest_origin_document_id"],
+            assessed_by=row["assessed_by"],
+            assessed_at=row["assessed_at"],
+            rationale=row["rationale"],
+            supporting_link_ids=supporting_link_ids,
+        )
+
+    def _confirmed_support_links(
+        self, connection: sqlite3.Connection, link_ids: list[str]
+    ) -> list[sqlite3.Row]:
+        if len(link_ids) != len(set(link_ids)):
+            raise StorageError("A supporting provenance link cannot be repeated.")
+        if not link_ids:
+            return []
+        rows = connection.execute(
+            """
+            SELECT link.link_id, link.document_id, link.upstream_document_id,
+                review.decision
+            FROM provenance_links AS link
+            LEFT JOIN provenance_link_reviews AS review
+                ON review.review_id = (
+                    SELECT latest.review_id
+                    FROM provenance_link_reviews AS latest
+                    WHERE latest.link_id = link.link_id
+                    ORDER BY latest.rowid DESC
+                    LIMIT 1
+                )
+            WHERE link.link_id IN (
+            """ + ",".join("?" for _ in link_ids) + ")",
+            link_ids,
+        ).fetchall()
+        by_id = {row["link_id"]: row for row in rows}
+        if len(by_id) != len(link_ids):
+            missing = next(link_id for link_id in link_ids if link_id not in by_id)
+            raise StorageError(f"Supporting provenance link {missing} was not found.")
+        for link_id in link_ids:
+            if by_id[link_id]["decision"] != "CONFIRMED":
+                raise StorageError(
+                    f"Supporting provenance link {link_id} is not confirmed."
+                )
+        return [by_id[link_id] for link_id in link_ids]
+
+    def record_provenance_origin(
+        self,
+        *,
+        document_id: str,
+        origin_status: str,
+        earliest_origin_document_id: str | None,
+        assessed_by: str,
+        assessed_at: str,
+        rationale: str,
+        supporting_link_ids: list[str] | None = None,
+    ) -> ProvenanceOriginAssessment:
+        if origin_status not in {"IDENTIFIED", "UNCERTAIN", "UNKNOWN"}:
+            raise StorageError(f"Unsupported origin status: {origin_status}.")
+        if not assessed_by.strip() or not rationale.strip():
+            raise StorageError("An origin assessment needs an analyst and rationale.")
+        _validate_timestamp(assessed_at, "assessed_at")
+        if origin_status == "IDENTIFIED" and not earliest_origin_document_id:
+            raise StorageError("An IDENTIFIED origin requires an earliest origin document.")
+        if origin_status == "UNKNOWN" and earliest_origin_document_id is not None:
+            raise StorageError("An UNKNOWN origin cannot name an earliest origin document.")
+        if earliest_origin_document_id == document_id:
+            raise StorageError("A document cannot be its own earliest origin.")
+        assessment_id = uuid.uuid4().hex
+        support_ids = supporting_link_ids or []
+        with self._lock, self._write_transaction() as connection:
+            for candidate_document_id in (
+                document_id,
+                *(
+                    [earliest_origin_document_id]
+                    if earliest_origin_document_id is not None
+                    else []
+                ),
+            ):
+                exists = connection.execute(
+                    "SELECT 1 FROM normalized_documents WHERE document_id = ?",
+                    (candidate_document_id,),
+                ).fetchone()
+                if exists is None:
+                    raise StorageError(
+                        f"Normalized document {candidate_document_id} was not found."
+                    )
+            supporting_links = self._confirmed_support_links(connection, support_ids)
+            if origin_status == "IDENTIFIED":
+                if not support_ids:
+                    raise StorageError(
+                        "An IDENTIFIED origin needs supporting confirmed provenance links."
+                    )
+                if not self._provenance_path_exists(
+                    supporting_links,
+                    document_id,
+                    earliest_origin_document_id or "",
+                ):
+                    raise StorageError(
+                        "Supporting links do not connect the document to its identified origin."
+                    )
+            connection.execute(
+                """
+                INSERT INTO provenance_origin_assessments (
+                    assessment_id, document_id, origin_status,
+                    earliest_origin_document_id, assessed_by, assessed_at, rationale
+                ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    assessment_id,
+                    document_id,
+                    origin_status,
+                    earliest_origin_document_id,
+                    assessed_by.strip(),
+                    assessed_at,
+                    rationale.strip(),
+                ),
+            )
+            for link_id in support_ids:
+                connection.execute(
+                    """
+                    INSERT INTO provenance_origin_support (assessment_id, link_id)
+                    VALUES (?, ?)
+                    """,
+                    (assessment_id, link_id),
+                )
+        return self.provenance_origin_history(document_id)[-1]
+
+    def provenance_origin_history(
+        self, document_id: str
+    ) -> list[ProvenanceOriginAssessment]:
+        with self._connect() as connection:
+            exists = connection.execute(
+                "SELECT 1 FROM normalized_documents WHERE document_id = ?",
+                (document_id,),
+            ).fetchone()
+            if exists is None:
+                raise StorageError(f"Normalized document {document_id} was not found.")
+            rows = connection.execute(
+                """
+                SELECT * FROM provenance_origin_assessments
+                WHERE document_id = ? ORDER BY rowid
+                """,
+                (document_id,),
+            ).fetchall()
+            result = []
+            for row in rows:
+                support_rows = connection.execute(
+                    """
+                    SELECT link_id FROM provenance_origin_support
+                    WHERE assessment_id = ? ORDER BY rowid
+                    """,
+                    (row["assessment_id"],),
+                ).fetchall()
+                result.append(
+                    self._provenance_origin_from_row(
+                        row, tuple(item["link_id"] for item in support_rows)
+                    )
+                )
+        return result
+
+    def latest_provenance_origin(
+        self, document_id: str
+    ) -> ProvenanceOriginAssessment | None:
+        history = self.provenance_origin_history(document_id)
+        return history[-1] if history else None
+
+    def _validate_independence_member(
+        self, connection: sqlite3.Connection, member_type: str, member_id: str
+    ) -> list[str]:
+        if member_type == "DOCUMENT":
+            row = connection.execute(
+                "SELECT document_id FROM normalized_documents WHERE document_id = ?",
+                (member_id,),
+            ).fetchone()
+            document_ids = [row["document_id"]] if row else []
+        elif member_type == "SOURCE":
+            exists = connection.execute(
+                """
+                SELECT 1
+                WHERE EXISTS (
+                    SELECT 1 FROM normalized_documents WHERE source_id = ?
+                ) OR EXISTS (
+                    SELECT 1 FROM collection_attempts WHERE source_id = ?
+                ) OR EXISTS (
+                    SELECT 1 FROM canonical_records
+                    WHERE record_type = 'source' AND record_id = ?
+                )
+                """,
+                (member_id, member_id, member_id),
+            ).fetchone()
+            if exists is None:
+                raise StorageError(f"Source {member_id} was not found.")
+            document_ids = [
+                row["document_id"]
+                for row in connection.execute(
+                    "SELECT document_id FROM normalized_documents WHERE source_id = ?",
+                    (member_id,),
+                ).fetchall()
+            ]
+        elif member_type == "EVIDENCE":
+            record = connection.execute(
+                """
+                SELECT payload_json FROM canonical_records
+                WHERE record_type = 'evidence' AND record_id = ?
+                """,
+                (member_id,),
+            ).fetchone()
+            if record is None:
+                raise StorageError(f"Evidence {member_id} was not found.")
+            source_id = json.loads(record["payload_json"])["source_id"]
+            document_ids = [
+                row["document_id"]
+                for row in connection.execute(
+                    "SELECT document_id FROM normalized_documents WHERE source_id = ?",
+                    (source_id,),
+                ).fetchall()
+            ]
+        else:
+            raise StorageError(
+                "Independence members must be DOCUMENT, SOURCE or EVIDENCE."
+            )
+        if not document_ids:
+            if member_type == "DOCUMENT":
+                raise StorageError(f"Document {member_id} was not found.")
+        return document_ids
+
+    def _confirmed_syndication_component(
+        self, connection: sqlite3.Connection, document_ids: list[str]
+    ) -> set[str]:
+        links = connection.execute(
+            """
+            SELECT link.document_id, link.upstream_document_id
+            FROM provenance_links AS link
+            JOIN provenance_link_reviews AS review
+                ON review.review_id = (
+                    SELECT latest.review_id
+                    FROM provenance_link_reviews AS latest
+                    WHERE latest.link_id = link.link_id
+                    ORDER BY latest.rowid DESC
+                    LIMIT 1
+                )
+            WHERE link.relationship_type = 'SYNDICATED'
+              AND review.decision = 'CONFIRMED'
+            """
+        ).fetchall()
+        adjacent: dict[str, set[str]] = {}
+        for link in links:
+            document_id = link["document_id"]
+            upstream_document_id = link["upstream_document_id"]
+            adjacent.setdefault(document_id, set()).add(upstream_document_id)
+            adjacent.setdefault(upstream_document_id, set()).add(document_id)
+        component: set[str] = set()
+        pending = list(document_ids)
+        while pending:
+            current = pending.pop()
+            if current in component:
+                continue
+            component.add(current)
+            pending.extend(adjacent.get(current, ()))
+        return component
+
+    def _validate_syndication_group(
+        self,
+        connection: sqlite3.Connection,
+        *,
+        group_id: str,
+        document_ids: list[str],
+    ) -> None:
+        groups = self._active_syndication_groups(connection, document_ids)
+        if any(existing_group != group_id for existing_group in groups):
+            raise StorageError(
+                "A document in a confirmed syndication chain already belongs "
+                "to a different independence group; dependent reports must use "
+                "the same group."
+            )
+
+    def _active_syndication_groups(
+        self, connection: sqlite3.Connection, document_ids: list[str]
+    ) -> set[str]:
+        component = self._confirmed_syndication_component(connection, document_ids)
+        if not component:
+            return set()
+        current_memberships = connection.execute(
+            self._independence_assignment_select()
+            + """
+                WHERE assignment.rowid = (
+                    SELECT MAX(current.rowid)
+                    FROM independence_assignments AS current
+                    WHERE current.member_type = assignment.member_type
+                      AND current.member_id = assignment.member_id
+                )
+                  AND review.decision = 'ACCEPTED'
+            """
+        ).fetchall()
+        groups: set[str] = set()
+        for row in current_memberships:
+            member_documents = self._validate_independence_member(
+                connection, row["member_type"], row["member_id"]
+            )
+            if component.intersection(member_documents):
+                groups.add(row["group_id"])
+        return groups
+
+    @staticmethod
+    def _independence_assignment_select() -> str:
+        return """
+            SELECT assignment.*,
+                review.decision AS review_status,
+                review.review_id,
+                review.reviewed_by,
+                review.reviewed_at,
+                review.rationale AS review_rationale
+            FROM independence_assignments AS assignment
+            LEFT JOIN independence_assignment_reviews AS review
+                ON review.review_id = (
+                    SELECT latest.review_id
+                    FROM independence_assignment_reviews AS latest
+                    WHERE latest.assignment_id = assignment.assignment_id
+                    ORDER BY latest.rowid DESC
+                    LIMIT 1
+                )
+        """
+
+    @staticmethod
+    def _independence_assignment_from_row(
+        connection: sqlite3.Connection, row: sqlite3.Row
+    ) -> IndependenceAssignment:
+        review_id = row["review_id"]
+        support_rows = (
+            connection.execute(
+                """
+                SELECT link_id FROM independence_review_support
+                WHERE review_id = ? ORDER BY rowid
+                """,
+                (review_id,),
+            ).fetchall()
+            if review_id is not None
+            else []
+        )
+        return IndependenceAssignment(
+            assignment_id=row["assignment_id"],
+            group_id=row["group_id"],
+            member_type=row["member_type"],
+            member_id=row["member_id"],
+            proposed_by=row["proposed_by"],
+            proposed_at=row["proposed_at"],
+            rationale=row["rationale"],
+            review_status=row["review_status"] or "PENDING",
+            reviewed_by=row["reviewed_by"],
+            reviewed_at=row["reviewed_at"],
+            review_rationale=row["review_rationale"],
+            supporting_link_ids=tuple(item["link_id"] for item in support_rows),
+        )
+
+    def propose_independence_assignment(
+        self,
+        *,
+        group_id: str,
+        member_type: str,
+        member_id: str,
+        proposed_by: str,
+        proposed_at: str,
+        rationale: str,
+    ) -> IndependenceAssignment:
+        if not group_id.strip() or not member_id.strip():
+            raise StorageError("An independence assignment needs a group and member.")
+        if member_type not in {"DOCUMENT", "SOURCE", "EVIDENCE"}:
+            raise StorageError(
+                "Independence members must be DOCUMENT, SOURCE or EVIDENCE."
+            )
+        if not proposed_by.strip() or not rationale.strip():
+            raise StorageError(
+                "An independence assignment proposal needs an analyst and rationale."
+            )
+        _validate_timestamp(proposed_at, "proposed_at")
+        assignment_id = uuid.uuid4().hex
+        with self._lock, self._write_transaction() as connection:
+            self._validate_independence_member(connection, member_type, member_id)
+            existing = connection.execute(
+                self._independence_assignment_select()
+                + """
+                    WHERE assignment.member_type = ? AND assignment.member_id = ?
+                    ORDER BY assignment.rowid DESC LIMIT 1
+                """,
+                (member_type, member_id),
+            ).fetchone()
+            if existing is not None and (
+                existing["review_status"] in (None, "ACCEPTED")
+            ):
+                raise StorageError(
+                    f"{member_type.lower()} {member_id} already has a pending or "
+                    "accepted independence assignment."
+                )
+            connection.execute(
+                """
+                INSERT INTO independence_assignments (
+                    assignment_id, group_id, member_type, member_id,
+                    proposed_by, proposed_at, rationale
+                ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    assignment_id,
+                    group_id.strip(),
+                    member_type,
+                    member_id.strip(),
+                    proposed_by.strip(),
+                    proposed_at,
+                    rationale.strip(),
+                ),
+            )
+        return self.independence_assignments(
+            assignment_id=assignment_id
+        )[0]
+
+    def independence_assignments(
+        self,
+        *,
+        group_id: str | None = None,
+        member_type: str | None = None,
+        member_id: str | None = None,
+        review_status: str | None = None,
+        assignment_id: str | None = None,
+    ) -> list[IndependenceAssignment]:
+        if member_type not in {None, "DOCUMENT", "SOURCE", "EVIDENCE"}:
+            raise ValueError("Unsupported independence member type.")
+        if review_status not in {
+            None,
+            "PENDING",
+            "ACCEPTED",
+            "REJECTED",
+            "UNRESOLVED",
+        }:
+            raise ValueError("Unsupported independence review status.")
+        query = self._independence_assignment_select() + """
+            WHERE (? IS NULL OR assignment.group_id = ?)
+              AND (? IS NULL OR assignment.member_type = ?)
+              AND (? IS NULL OR assignment.member_id = ?)
+              AND (? IS NULL OR assignment.assignment_id = ?)
+              AND (? IS NULL OR COALESCE(review.decision, 'PENDING') = ?)
+            ORDER BY assignment.proposed_at, assignment.assignment_id
+        """
+        parameters = (
+            group_id,
+            group_id,
+            member_type,
+            member_type,
+            member_id,
+            member_id,
+            assignment_id,
+            assignment_id,
+            review_status,
+            review_status,
+        )
+        with self._connect() as connection:
+            rows = connection.execute(query, parameters).fetchall()
+            assignments = [
+                self._independence_assignment_from_row(connection, row)
+                for row in rows
+            ]
+        return assignments
+
+    def review_independence_assignment(
+        self,
+        *,
+        assignment_id: str,
+        decision: str,
+        reviewed_by: str,
+        reviewed_at: str,
+        rationale: str,
+        supporting_link_ids: list[str] | None = None,
+    ) -> IndependenceAssignment:
+        if decision not in {"ACCEPTED", "REJECTED", "UNRESOLVED"}:
+            raise StorageError(
+                f"Unsupported independence assignment decision: {decision}."
+            )
+        if not reviewed_by.strip() or not rationale.strip():
+            raise StorageError("Independence review needs a reviewer and rationale.")
+        _validate_timestamp(reviewed_at, "reviewed_at")
+        review_id = uuid.uuid4().hex
+        support_ids = supporting_link_ids or []
+        with self._lock, self._write_transaction() as connection:
+            assignment = connection.execute(
+                """
+                SELECT * FROM independence_assignments
+                WHERE assignment_id = ?
+                """,
+                (assignment_id,),
+            ).fetchone()
+            if assignment is None:
+                raise StorageError(
+                    f"Independence assignment {assignment_id} was not found."
+                )
+            member_documents = self._validate_independence_member(
+                connection, assignment["member_type"], assignment["member_id"]
+            )
+            supporting_links = self._confirmed_support_links(connection, support_ids)
+            if support_ids and (
+                not member_documents
+                or not any(
+                    link["document_id"] in member_documents
+                    or link["upstream_document_id"] in member_documents
+                    for link in supporting_links
+                )
+            ):
+                raise StorageError(
+                    "Supporting provenance links do not involve this independence member."
+                )
+            if decision == "ACCEPTED":
+                other_accepted = connection.execute(
+                    self._independence_assignment_select()
+                    + """
+                        WHERE assignment.member_type = ?
+                          AND assignment.member_id = ?
+                          AND assignment.assignment_id != ?
+                          AND review.decision = 'ACCEPTED'
+                        LIMIT 1
+                    """,
+                    (
+                        assignment["member_type"],
+                        assignment["member_id"],
+                        assignment_id,
+                    ),
+                ).fetchone()
+                if other_accepted is not None:
+                    raise StorageError(
+                        "An independence member cannot have multiple accepted groups; "
+                        "resolve its existing assignment first."
+                    )
+                self._validate_syndication_group(
+                    connection,
+                    group_id=assignment["group_id"],
+                    document_ids=member_documents,
+                )
+            connection.execute(
+                """
+                INSERT INTO independence_assignment_reviews (
+                    review_id, assignment_id, decision, reviewed_by,
+                    reviewed_at, rationale
+                ) VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    review_id,
+                    assignment_id,
+                    decision,
+                    reviewed_by.strip(),
+                    reviewed_at,
+                    rationale.strip(),
+                ),
+            )
+            for link_id in support_ids:
+                connection.execute(
+                    """
+                    INSERT INTO independence_review_support (review_id, link_id)
+                    VALUES (?, ?)
+                    """,
+                    (review_id, link_id),
+                )
+        return self.independence_assignments(assignment_id=assignment_id)[0]
+
+    def independence_assignment_history(
+        self, assignment_id: str
+    ) -> list[IndependenceAssignment]:
+        with self._connect() as connection:
+            assignment = connection.execute(
+                "SELECT * FROM independence_assignments WHERE assignment_id = ?",
+                (assignment_id,),
+            ).fetchone()
+            if assignment is None:
+                raise StorageError(
+                    f"Independence assignment {assignment_id} was not found."
+                )
+            reviews = connection.execute(
+                """
+                SELECT * FROM independence_assignment_reviews
+                WHERE assignment_id = ? ORDER BY rowid
+                """,
+                (assignment_id,),
+            ).fetchall()
+            initial_values = {
+                "assignment_id": assignment["assignment_id"],
+                "group_id": assignment["group_id"],
+                "member_type": assignment["member_type"],
+                "member_id": assignment["member_id"],
+                "proposed_by": assignment["proposed_by"],
+                "proposed_at": assignment["proposed_at"],
+                "rationale": assignment["rationale"],
+            }
+            history = [IndependenceAssignment(
+                **initial_values,
+                review_status="PENDING",
+                reviewed_by=None,
+                reviewed_at=None,
+                review_rationale=None,
+                supporting_link_ids=(),
+            )]
+            for review in reviews:
+                support_rows = connection.execute(
+                    """
+                    SELECT link_id FROM independence_review_support
+                    WHERE review_id = ? ORDER BY rowid
+                    """,
+                    (review["review_id"],),
+                ).fetchall()
+                history.append(
+                    IndependenceAssignment(
+                        **initial_values,
+                        review_status=review["decision"],
+                        reviewed_by=review["reviewed_by"],
+                        reviewed_at=review["reviewed_at"],
+                        review_rationale=review["rationale"],
+                        supporting_link_ids=tuple(
+                            row["link_id"] for row in support_rows
+                        ),
+                    )
+                )
+        return history
 
     def get_raw_snapshot(self, content_ref: str) -> RawSnapshot:
         if not content_ref.startswith("sha256:"):

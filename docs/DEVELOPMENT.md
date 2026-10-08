@@ -2,9 +2,10 @@
 
 The Python CLI validates the reviewed MVP configuration, manages local SQLite
 persistence, supports explicitly approved public RSS/URL collection, and
-records source-grounded claim extraction candidates for analyst review.
-Automatic NLP/LLM extraction, automated event analysis, report generation,
-authentication and an API are not implemented.
+records source-grounded claim extraction candidates, traces provenance and
+supports reviewed independence groups. Automatic NLP/LLM extraction,
+automated event analysis, report generation, authentication and an API are not
+implemented.
 
 ## Requirements
 
@@ -86,6 +87,18 @@ cnvs claim extract CNVS-EVT-2026-10-08-0001 DOCUMENT-ID --file candidates.json -
 cnvs claim list --event-id CNVS-EVT-2026-10-08-0001 --status PENDING
 cnvs claim review CANDIDATE-ID --decision CORRECTED --reviewer analyst --rationale "Refined extraction" --correction-file corrected-candidate.json
 cnvs claim history CANDIDATE-ID
+cnvs provenance link DOCUMENT-ID UPSTREAM-DOCUMENT-ID --type SYNDICATED --proposed-by analyst --rationale "Publisher credits the upstream report"
+cnvs provenance review-link LINK-ID --decision CONFIRMED --reviewer reviewer --rationale "The byline identifies the originating report"
+cnvs provenance links --document-id DOCUMENT-ID --status PENDING
+cnvs provenance graph DOCUMENT-ID
+cnvs provenance claim CANDIDATE-ID
+cnvs provenance origin DOCUMENT-ID --status IDENTIFIED --earliest-origin-document-id ORIGIN-DOCUMENT-ID --supporting-link LINK-ID --analyst analyst --rationale "Confirmed source chain reaches this report"
+cnvs provenance origin DOCUMENT-ID --status UNKNOWN --analyst analyst --rationale "No traceable upstream origin was found"
+cnvs provenance origin-history DOCUMENT-ID
+cnvs provenance assign --member-type DOCUMENT --member-id DOCUMENT-ID --group-id IG-001 --proposed-by analyst --rationale "This article republishes the linked report"
+cnvs provenance review-assignment ASSIGNMENT-ID --decision ACCEPTED --reviewer reviewer --rationale "The shared chain is supported by the confirmed link" --supporting-link LINK-ID
+cnvs provenance assignments --group-id IG-001 --status ACCEPTED
+cnvs provenance assignment-history ASSIGNMENT-ID
 ```
 
 Configuration directory resolution is:
@@ -190,7 +203,7 @@ revision; `event timeline-history` displays the audit trail. The system does
 not infer an occurrence time from publication or collection time.
 
 ## Local database
-Stages 3-7 use SQLite and apply checksummed migrations automatically when the
+Stages 3-8 use SQLite and apply checksummed migrations automatically when the
 database is opened. The default database path is `.data/cnvs.sqlite3`; override
 it with `CNVS_DATABASE_PATH` or `--database` on a database command:
 
@@ -210,7 +223,8 @@ Canonical JSON Schema records are validated before storage, and database
 revisions preserve prior record payloads. Raw snapshots are content-addressed;
 collection attempts, normalized documents, translations, duplicate matches
 and duplicate-review decisions, event/source match proposals and reviews, and
-event timeline revisions, claim extraction candidates and claim reviews are
+event timeline revisions, claim extraction candidates and reviews, provenance
+links and reviews, origin assessments and independence assignments/reviews are
 append-only. `cnvs db status` shows the applied schema migrations; changed
 migration files are rejected and require a new migration instead.
 
@@ -249,6 +263,41 @@ and attribution have been reviewed, not that its proposition is true.
 Corrections remain review payloads; candidates are not promoted to canonical
 claims or evidence. The CLI does not invoke a model, and imported text remains
 untrusted data.
+
+### Provenance and independence
+
+Use `provenance link DOCUMENT-ID UPSTREAM-DOCUMENT-ID` to propose a directed
+document relationship. It means the first document cites, quotes, republishes
+or derives from the upstream document, as selected by `--type`. Proposals are
+not part of the established graph until `provenance review-link` records
+`CONFIRMED`; reviewers may instead record `REJECTED` or `UNRESOLVED`, always
+with rationale. Confirmed cycles are rejected. `provenance graph DOCUMENT-ID`
+shows the reachable confirmed upstream links, and `provenance claim
+CANDIDATE-ID` starts at a Stage 7 candidate's source document. These
+document-level links expose each document's originating source ID; CNVS does
+not infer them automatically from article similarity or duplicate candidates.
+
+Record an origin assessment for each document when reviewed. `IDENTIFIED`
+requires an earliest-origin document and confirmed support links forming a
+path from the assessed document; `UNCERTAIN` can name a possible origin or
+leave it unspecified; `UNKNOWN` must not name one. Assessments and their
+supporting links are immutable, and `provenance origin-history` shows every
+assessment. Lack of a recorded origin is not automatically interpreted as
+unknown.
+
+`provenance assign` proposes a group membership for a `DOCUMENT`, `SOURCE`
+or `EVIDENCE`. A separate `provenance review-assignment` must accept the
+proposal before it is an active group membership. Reviews can reject it or
+leave it unresolved, and can cite confirmed provenance links with repeated
+`--supporting-link` options. A member can have only one accepted group at a
+time; append an `UNRESOLVED` review to reconsider it before proposing a
+replacement. `provenance assignments --status ACCEPTED` lists the reviewed
+members. Existing accepted memberships in a confirmed syndication chain must
+agree; a new conflicting syndication link or assignment is rejected until
+those assignments are resolved and reviewed again. The IDs are analyst-defined
+labels, not a calibrated score or a confirmation count. The CLI does not
+automatically group dependent stories; record and review the dependency rather
+than assuming repetition is independent evidence.
 
 `CNVS_LOG_LEVEL` accepts `DEBUG`, `INFO`, `WARNING`, `ERROR` or `CRITICAL`;
 the default is `WARNING`. Environment values are read from the process
