@@ -35,6 +35,8 @@ from cnvs.models import (
     NormalizedDocument,
     ProvenanceLink,
     ProvenanceOriginAssessment,
+    ReportReview,
+    ReportSnapshot,
     RawSnapshot,
     Source,
     TimelineEntry,
@@ -65,7 +67,9 @@ def _validate_timestamp(value: str, name: str) -> None:
 @dataclass(frozen=True)
 class ReconstructedAssessment:
     assessment: Assessment
+    revision: int
     records: dict[tuple[str, str], CanonicalRecord]
+    record_revisions: dict[tuple[str, str], int]
 
 
 def _utc_now() -> str:
@@ -4514,4 +4518,230 @@ class Database:
             )
             for item in references
         }
-        return ReconstructedAssessment(assessment=assessment, records=records)
+        revisions = {
+            (item["record_type"], item["record_id"]): item["revision"]
+            for item in references
+        }
+        return ReconstructedAssessment(
+            assessment=assessment,
+            revision=revision,
+            records=records,
+            record_revisions=revisions,
+        )
+
+    def create_report_snapshot(
+        self,
+        *,
+        report_id: str,
+        event_id: str,
+        assessment_id: str,
+        assessment_revision: int,
+        high_impact: bool,
+        generated_at: str,
+        input_snapshot: dict[str, JsonValue],
+        markdown: str,
+        html: str,
+    ) -> ReportSnapshot:
+        if not report_id.strip():
+            raise StorageError("A report needs an identifier.")
+        if assessment_revision < 1:
+            raise StorageError("Assessment revision must be positive.")
+        _validate_timestamp(generated_at, "generated_at")
+        report_input = input_snapshot.get("report")
+        assessment_input = input_snapshot.get("canonical_assessment_snapshot")
+        if not isinstance(report_input, dict) or not isinstance(assessment_input, dict):
+            raise StorageError(
+                "A report snapshot must include its report and canonical assessment inputs."
+            )
+        assessment_record = assessment_input.get("assessment")
+        if (
+            report_input.get("report_id") != report_id
+            or report_input.get("report_event_id") != event_id
+            or report_input.get("assessment_id") != assessment_id
+            or report_input.get("assessment_revision") != assessment_revision
+            or report_input.get("generated_at") != generated_at
+            or report_input.get("high_impact") is not high_impact
+            or not isinstance(assessment_record, dict)
+            or assessment_record.get("assessment_id") != assessment_id
+            or assessment_record.get("event_id") != event_id
+        ):
+            raise StorageError(
+                "Report metadata does not match its stored assessment snapshot."
+            )
+        input_snapshot_json = _json_text(input_snapshot)
+        input_sha256 = hashlib.sha256(input_snapshot_json.encode("utf-8")).hexdigest()
+        content_sha256 = hashlib.sha256(
+            (markdown + "\0" + html).encode("utf-8")
+        ).hexdigest()
+        with self._lock, self._write_transaction() as connection:
+            try:
+                connection.execute(
+                    """
+                    INSERT INTO report_snapshots (
+                        report_id, event_id, assessment_id, assessment_revision,
+                        high_impact, generated_at, input_snapshot_json,
+                        input_sha256, markdown, html, content_sha256
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        report_id,
+                        event_id,
+                        assessment_id,
+                        assessment_revision,
+                        int(high_impact),
+                        generated_at,
+                        input_snapshot_json,
+                        input_sha256,
+                        markdown,
+                        html,
+                        content_sha256,
+                    ),
+                )
+            except sqlite3.IntegrityError as error:
+                raise StorageError(
+                    f"Could not store report snapshot {report_id}: {error}"
+                ) from error
+        return self.get_report(report_id)
+
+    def get_report(self, report_id: str) -> ReportSnapshot:
+        with self._connect() as connection:
+            row = connection.execute(
+                self._report_select()
+                + " WHERE report.report_id = ?",
+                (report_id,),
+            ).fetchone()
+        if row is None:
+            raise StorageError(f"Report {report_id} was not found.")
+        report = self._report_from_row(row)
+        input_hash = hashlib.sha256(
+            report.input_snapshot_json.encode("utf-8")
+        ).hexdigest()
+        content_hash = hashlib.sha256(
+            (report.markdown + "\0" + report.html).encode("utf-8")
+        ).hexdigest()
+        if input_hash != report.input_sha256 or content_hash != report.content_sha256:
+            raise StorageError(f"Report {report_id} failed its integrity check.")
+        return report
+
+    def reports(self, *, event_id: str | None = None) -> list[ReportSnapshot]:
+        with self._connect() as connection:
+            rows = connection.execute(
+                self._report_select()
+                + """
+                    WHERE (? IS NULL OR report.event_id = ?)
+                    ORDER BY report.generated_at, report.report_id
+                """,
+                (event_id, event_id),
+            ).fetchall()
+        reports = [self._report_from_row(row) for row in rows]
+        for report in reports:
+            input_hash = hashlib.sha256(
+                report.input_snapshot_json.encode("utf-8")
+            ).hexdigest()
+            content_hash = hashlib.sha256(
+                (report.markdown + "\0" + report.html).encode("utf-8")
+            ).hexdigest()
+            if input_hash != report.input_sha256 or content_hash != report.content_sha256:
+                raise StorageError(f"Report {report.report_id} failed its integrity check.")
+        return reports
+
+    def review_report(
+        self,
+        *,
+        report_id: str,
+        decision: str,
+        reviewed_by: str,
+        reviewed_at: str,
+        rationale: str,
+    ) -> ReportSnapshot:
+        if decision not in {"APPROVED", "REJECTED"}:
+            raise StorageError("Report review decision must be APPROVED or REJECTED.")
+        if not reviewed_by.strip() or not rationale.strip():
+            raise StorageError("Report review needs a reviewer and rationale.")
+        _validate_timestamp(reviewed_at, "reviewed_at")
+        with self._lock, self._write_transaction() as connection:
+            exists = connection.execute(
+                "SELECT 1 FROM report_snapshots WHERE report_id = ?", (report_id,)
+            ).fetchone()
+            if exists is None:
+                raise StorageError(f"Report {report_id} was not found.")
+            connection.execute(
+                """
+                INSERT INTO report_reviews (
+                    review_id, report_id, decision, reviewed_by, reviewed_at, rationale
+                ) VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    uuid.uuid4().hex,
+                    report_id,
+                    decision,
+                    reviewed_by.strip(),
+                    reviewed_at,
+                    rationale.strip(),
+                ),
+            )
+        return self.get_report(report_id)
+
+    def report_review_history(self, report_id: str) -> list[ReportReview]:
+        with self._connect() as connection:
+            exists = connection.execute(
+                "SELECT 1 FROM report_snapshots WHERE report_id = ?", (report_id,)
+            ).fetchone()
+            if exists is None:
+                raise StorageError(f"Report {report_id} was not found.")
+            rows = connection.execute(
+                """
+                SELECT decision, reviewed_by, reviewed_at, rationale
+                FROM report_reviews
+                WHERE report_id = ?
+                ORDER BY sequence
+                """,
+                (report_id,),
+            ).fetchall()
+        return [
+            ReportReview(
+                report_id=report_id,
+                decision=row["decision"],
+                reviewed_by=row["reviewed_by"],
+                reviewed_at=row["reviewed_at"],
+                rationale=row["rationale"],
+            )
+            for row in rows
+        ]
+
+    @staticmethod
+    def _report_select() -> str:
+        return """
+            SELECT report.*,
+                   COALESCE(review.decision, 'PENDING') AS status,
+                   review.reviewed_by,
+                   review.reviewed_at,
+                   review.rationale AS review_rationale
+            FROM report_snapshots AS report
+            LEFT JOIN report_reviews AS review
+                ON review.sequence = (
+                    SELECT MAX(latest.sequence)
+                    FROM report_reviews AS latest
+                    WHERE latest.report_id = report.report_id
+                )
+        """
+
+    @staticmethod
+    def _report_from_row(row: sqlite3.Row) -> ReportSnapshot:
+        return ReportSnapshot(
+            report_id=row["report_id"],
+            event_id=row["event_id"],
+            assessment_id=row["assessment_id"],
+            assessment_revision=row["assessment_revision"],
+            high_impact=bool(row["high_impact"]),
+            generated_at=row["generated_at"],
+            input_snapshot_json=row["input_snapshot_json"],
+            input_sha256=row["input_sha256"],
+            content_sha256=row["content_sha256"],
+            markdown=row["markdown"],
+            html=row["html"],
+            status=row["status"],
+            reviewed_by=row["reviewed_by"],
+            reviewed_at=row["reviewed_at"],
+            review_rationale=row["review_rationale"],
+        )

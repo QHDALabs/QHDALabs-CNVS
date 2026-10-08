@@ -16,6 +16,7 @@ from cnvs.configuration import (
 )
 from cnvs.models import (
     CollectionResult,
+    Assessment,
     Claim,
     ClaimEvidenceLink,
     ClaimExtraction,
@@ -34,6 +35,8 @@ from cnvs.models import (
     NormalizedDocument,
     ProvenanceLink,
     ProvenanceOriginAssessment,
+    ReportReview,
+    ReportSnapshot,
     Source,
     TimelineEntry,
     TranslationRecord,
@@ -43,6 +46,7 @@ from cnvs.normalization import (
     normalize_collection,
 )
 from cnvs.registry import load_source_registry
+from cnvs.reporting import create_report
 from cnvs.settings import Settings
 from cnvs.storage import Database, StorageError
 from cnvs.validation import parse_record
@@ -164,6 +168,74 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     source_translation_list.add_argument("document_id")
     source_translation_list.add_argument("--database", help="SQLite database file.")
+
+    assessment_parser = commands.add_parser(
+        "assessment", help="Store and inspect versioned analyst assessments."
+    )
+    assessment_commands = assessment_parser.add_subparsers(
+        dest="assessment_command", required=True
+    )
+    assessment_record = assessment_commands.add_parser(
+        "record", help="Store or revise an assessment from validated JSON."
+    )
+    assessment_record.add_argument("--file", required=True)
+    assessment_record.add_argument("--database", help="SQLite database file.")
+    assessment_show = assessment_commands.add_parser(
+        "show", help="Show an assessment revision and its pinned records."
+    )
+    assessment_show.add_argument("assessment_id")
+    assessment_show.add_argument("--revision", type=int)
+    assessment_show.add_argument("--database", help="SQLite database file.")
+
+    report_parser = commands.add_parser(
+        "report", help="Create, review, inspect and export analyst report snapshots."
+    )
+    report_commands = report_parser.add_subparsers(
+        dest="report_command", required=True
+    )
+    report_create = report_commands.add_parser(
+        "create", help="Create a reproducible Markdown/HTML draft from an assessment."
+    )
+    report_create.add_argument("assessment_id")
+    report_create.add_argument("--revision", type=int)
+    report_create.add_argument(
+        "--high-impact", action="store_true",
+        help="Mark the report as high-impact; approval remains explicitly reviewed.",
+    )
+    report_create.add_argument("--config-dir", help="Configuration directory.")
+    report_create.add_argument("--database", help="SQLite database file.")
+    report_preview = report_commands.add_parser(
+        "preview", help="Preview a stored report draft or reviewed snapshot."
+    )
+    report_preview.add_argument("report_id")
+    report_preview.add_argument("--database", help="SQLite database file.")
+    report_review = report_commands.add_parser(
+        "review", help="Append an attributable approval or rejection."
+    )
+    report_review.add_argument("report_id")
+    report_review.add_argument(
+        "--decision", required=True, choices=("APPROVED", "REJECTED")
+    )
+    report_review.add_argument("--reviewer", required=True)
+    report_review.add_argument("--rationale", required=True)
+    report_review.add_argument("--reviewed-at")
+    report_review.add_argument("--database", help="SQLite database file.")
+    report_reviews = report_commands.add_parser(
+        "reviews", help="Show append-only review history for a report."
+    )
+    report_reviews.add_argument("report_id")
+    report_reviews.add_argument("--database", help="SQLite database file.")
+    report_list = report_commands.add_parser(
+        "list", help="List reports and their current review status."
+    )
+    report_list.add_argument("--event-id")
+    report_list.add_argument("--database", help="SQLite database file.")
+    report_export = report_commands.add_parser(
+        "export", help="Export both formats only after report approval."
+    )
+    report_export.add_argument("report_id")
+    report_export.add_argument("--directory", required=True)
+    report_export.add_argument("--database", help="SQLite database file.")
 
     event_parser = commands.add_parser(
         "event", help="Create events, review source matches and maintain timelines."
@@ -1131,6 +1203,31 @@ def _print_evidence_gap(gap: EvidenceGap) -> None:
         )
 
 
+def _print_report(report: ReportSnapshot) -> None:
+    print(
+        f"{report.report_id} event={report.event_id} "
+        f"assessment={report.assessment_id}@{report.assessment_revision} "
+        f"status={report.status} high_impact={report.high_impact}"
+    )
+    print(
+        f"  generated_at={report.generated_at} input_sha256={report.input_sha256} "
+        f"content_sha256={report.content_sha256}"
+    )
+    if report.reviewed_by is not None:
+        print(
+            f"  reviewed_by={report.reviewed_by} reviewed_at={report.reviewed_at} "
+            f"rationale={report.review_rationale}"
+        )
+
+
+def _print_report_review(review: ReportReview) -> None:
+    print(
+        f"report={review.report_id} decision={review.decision} "
+        f"reviewed_by={review.reviewed_by} reviewed_at={review.reviewed_at}"
+    )
+    print(f"  rationale={review.rationale}")
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     parser = _build_parser()
     args = parser.parse_args(argv)
@@ -1262,6 +1359,122 @@ def main(argv: Sequence[str] | None = None) -> int:
                 event_id=args.event_id, config_sha256=catalog.config_sha256
             )
             _print_national_information_matrix(matrix)
+            return 0
+
+        if args.command == "assessment":
+            settings = Settings.from_environment(
+                database_path_override=args.database
+            )
+            database = Database(settings.database_path)
+            if args.assessment_command == "record":
+                payload = json.loads(
+                    Path(args.file).expanduser().read_text(encoding="utf-8")
+                )
+                if not isinstance(payload, dict):
+                    raise ValueError("Assessment input must be a JSON object.")
+                assessment = parse_record("assessment", payload)
+                if not isinstance(assessment, Assessment):
+                    raise ValueError("Assessment input did not produce an assessment.")
+                revision = database.save(assessment)
+                print(
+                    f"Stored assessment {assessment.assessment_id} "
+                    f"at revision {revision}."
+                )
+                return 0
+            reconstructed = database.reconstruct_assessment(
+                args.assessment_id, revision=args.revision
+            )
+            print(
+                f"Assessment {reconstructed.assessment.assessment_id} "
+                f"event={reconstructed.assessment.event_id} "
+                f"facts={len(reconstructed.assessment.facts)} "
+                f"claims={len(reconstructed.assessment.claim_ids)} "
+                f"evidence={len(reconstructed.assessment.evidence_ids)} "
+                f"human_reviewed={reconstructed.assessment.human_reviewed}"
+            )
+            for (record_type, record_id), revision in sorted(
+                reconstructed.record_revisions.items()
+            ):
+                print(f"  {record_type} {record_id} revision {revision}")
+            return 0
+
+        if args.command == "report":
+            settings = Settings.from_environment(
+                config_dir_override=getattr(args, "config_dir", None),
+                database_path_override=args.database,
+            )
+            database = Database(settings.database_path)
+            if args.report_command == "create":
+                catalog = load_country_coverage_catalog(settings.config_dir)
+                report = create_report(
+                    database,
+                    assessment_id=args.assessment_id,
+                    assessment_revision=args.revision,
+                    high_impact=args.high_impact,
+                    config_sha256=catalog.config_sha256,
+                )
+                _print_report(report)
+                return 0
+            if args.report_command == "preview":
+                report = database.get_report(args.report_id)
+                print(report.markdown, end="")
+                return 0
+            if args.report_command == "review":
+                reviewed_at = args.reviewed_at or (
+                    datetime.now(timezone.utc)
+                    .isoformat(timespec="seconds")
+                    .replace("+00:00", "Z")
+                )
+                report = database.review_report(
+                    report_id=args.report_id,
+                    decision=args.decision,
+                    reviewed_by=args.reviewer,
+                    reviewed_at=reviewed_at,
+                    rationale=args.rationale,
+                )
+                _print_report(report)
+                return 0
+            if args.report_command == "reviews":
+                reviews = database.report_review_history(args.report_id)
+                if not reviews:
+                    print("No report reviews found.")
+                for review in reviews:
+                    _print_report_review(review)
+                return 0
+            if args.report_command == "list":
+                reports = database.reports(event_id=args.event_id)
+                if not reports:
+                    print("No reports found.")
+                for report in reports:
+                    _print_report(report)
+                return 0
+            report = database.get_report(args.report_id)
+            if report.status != "APPROVED":
+                raise StorageError(
+                    f"Report {report.report_id} cannot be exported before approval "
+                    f"(current status: {report.status})."
+                )
+            directory = Path(args.directory).expanduser()
+            directory.mkdir(parents=True, exist_ok=True)
+            markdown_path = directory / f"{report.report_id}.md"
+            html_path = directory / f"{report.report_id}.html"
+            if markdown_path.exists() or html_path.exists():
+                raise StorageError(
+                    f"Export would overwrite an existing report file in {directory}."
+                )
+            created_paths: list[Path] = []
+            try:
+                with markdown_path.open("x", encoding="utf-8", newline="\n") as stream:
+                    stream.write(report.markdown)
+                created_paths.append(markdown_path)
+                with html_path.open("x", encoding="utf-8", newline="\n") as stream:
+                    stream.write(report.html)
+                created_paths.append(html_path)
+            except OSError:
+                for path in created_paths:
+                    path.unlink(missing_ok=True)
+                raise
+            print(f"Exported approved report to {markdown_path} and {html_path}.")
             return 0
 
         if args.command == "event":

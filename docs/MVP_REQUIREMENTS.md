@@ -178,9 +178,12 @@ They are acceptance targets, not claims about current functionality.
 | AC-16 | The documented setup and automated test suite pass from a clean environment; no credentials or machine-local secrets are required in the repository. | Follow setup instructions in a clean checkout, run CI tests and scan tracked files for secrets. |
 
 Criteria involving behavior, storage, permissions and collection are to be
-implemented and tested in later stages. Stage 1 is complete when scope,
-decisions and acceptance targets are documented and reviewed—not when these
-criteria pass.
+implemented and tested incrementally. Stage 11 implements reproducible report
+rendering and the attributable review/export gate in AC-06. The CLI's reviewer
+label is self-reported: authentication and role enforcement are not
+implemented, so AC-07 remains open. Stage 1 is complete when scope, decisions
+and acceptance targets are documented and reviewed—not when these criteria
+pass.
 
 ## 5. Decision record and remaining prerequisites
 

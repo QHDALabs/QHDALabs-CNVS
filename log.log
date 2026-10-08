@@ -355,7 +355,7 @@ stage's changes.
 
 Stage 11 — Produce analyst-reviewed reports
 -------------------------------------------
-Status: TODO
+Status: DONE
 Tasks:
 - Generate Markdown and HTML reports from linked, versioned records.
 - Separate FACT, CLAIM, ASSESSMENT, CONFIDENCE and GAP sections.
@@ -367,6 +367,27 @@ Done when:
 - A reviewed event can be exported as a reproducible report with linked sources
   and evidence.
 - Unresolved attribution and uncertainty are preserved in rendered output.
+Implementation:
+- Added migration 009 with immutable report/input snapshots and append-only
+  attributable review history tied to the exact assessment revision.
+- Added deterministic Markdown and escaped HTML renderers with separate
+  confidence dimensions, revision-labelled claims/evidence/sources,
+  supporting/contradicting relationships, source provenance, independence
+  groups, timeline, coverage and explicit gaps. Pending/unresolved source and
+  claim/evidence links remain visible and are never counted as linked evidence.
+- Added assessment record/show and report create/preview/review/reviews/list/
+  export CLI workflows. Both formats export only after an APPROVED review;
+  later rejection blocks further export, and existing files are not overwritten.
+- Added nine reporting tests covering revision pinning, reproducibility,
+  escaping/unsafe links, high-impact approval/export gating, review audit
+  history, metadata integrity, unresolved links, linked provenance/timeline/
+  independence and out-of-catalog coverage.
+- Reviewer labels are operator-supplied; authentication, role-based internal
+  reader access and external publication remain out of scope.
+- Verification: `python -m unittest discover -s tests -v` — 103 tests passed;
+  `python -m cnvs config validate` — 12 countries, 11 languages, 9 event types
+  and 2 source types valid; Pylance reports no errors in changed Python files;
+  `git diff --check` passes.
 
 Stage 12 — Operational quality, security and reliability
 ---------------------------------------------------------
@@ -418,11 +439,11 @@ MVP EXIT CHECKLIST
 [x] Evidence, contradictions and unresolved gaps are represented.
 [ ] Event timeline is available with distinct event/publication/collection times.
 [x] National information matrix supports the selected 10–15 countries.
-[ ] Markdown and HTML reports are generated from versioned records.
-[ ] High-impact reports require and record human review.
+[x] Markdown and HTML reports are generated from versioned records.
+[x] High-impact reports require and record human review.
 [ ] Tests, security safeguards, documented setup and CI pass.
-[ ] No repetition is reported as independent confirmation.
-[ ] Occurrence, method and attribution remain separate confidence dimensions.
+[x] No repetition is reported as independent confirmation.
+[x] Occurrence, method and attribution remain separate confidence dimensions.
 
 
 EXPLICITLY DEFERRED BEYOND MVP

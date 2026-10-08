@@ -367,3 +367,32 @@ assessment in preference to pending proposals; `cnvs matrix assessments
 `cnvs matrix show EVENT-ID` prints the selected matrix and makes coverage gaps,
 configuration drift and assessment states visible. Country comparisons are
 coverage summaries, not claims that any country is inherently correct.
+
+## Analyst report snapshots
+
+`cnvs report create ASSESSMENT-ID` reconstructs the selected immutable
+assessment revision and its pinned event, source, claim and evidence
+revisions. The report also captures the linked source-document matches,
+confirmed provenance links, accepted independence assignments, reviewed
+claim/evidence relations, current timeline and evidence gaps, plus the
+country-coverage plan/matrix available at generation time. This complete input
+snapshot is stored as deterministic JSON with a SHA-256 digest; the rendered
+Markdown and escaped HTML are stored with a second digest and cannot be
+updated or deleted. Re-rendering the stored structured sections produces the
+same report bytes.
+
+The rendered report keeps FACT, CLAIM, ASSESSMENT, CONFIDENCE and GAP distinct,
+prints source/claim/evidence revision identifiers, labels contradictions,
+and preserves UNKNOWN confidence and unresolved attribution. Occurrence,
+method and attribution confidence remain separate dimensions. The assessment's
+`human_reviewed` field is not treated as approval: report approval or rejection
+is a separate append-only entry tied to the exact immutable report ID, with a
+reviewer label, timestamp and rationale. Markdown and HTML export is refused
+unless the latest report review is `APPROVED`; a later rejection revokes that
+report's export eligibility.
+
+The current CLI accepts a reviewer label supplied by its operator; it does not
+authenticate that identity or enforce analyst/internal-reader roles. Access
+control, secure distribution and external publication are not implemented.
+Reports are internal workflow artifacts, and the export command writes local
+files only.

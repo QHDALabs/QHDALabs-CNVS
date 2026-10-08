@@ -6,8 +6,10 @@ records source-grounded claim extraction candidates, traces provenance,
 supports reviewed independence groups, and stores reviewed evidence/claim
 relations with explicit evidence gaps. The national information matrix supports
 reviewed event-specific country/language plans, linked-source coverage counts
-and separately reviewed analyst assessments. Automatic NLP/LLM extraction,
-automated event matching or contradiction detection, report generation,
+and separately reviewed analyst assessments. Versioned analyst assessments
+can be rendered as immutable, reproducible Markdown/HTML report snapshots with
+attributable review history and approval-gated local export. Automatic
+NLP/LLM extraction, automated event matching or contradiction detection,
 authentication and an API are not implemented.
 
 ## Requirements
@@ -121,6 +123,14 @@ cnvs matrix assess PLAN-ID PL --file country-assessment.json --analyst analyst -
 cnvs matrix review-assessment ASSESSMENT-ID --decision ACCEPTED --reviewer reviewer --rationale "Assessment and confidence dimensions reviewed"
 cnvs matrix assessments --plan-id PLAN-ID
 cnvs matrix show CNVS-EVT-2026-10-08-0001
+cnvs assessment record --file assessment.json
+cnvs assessment show ASM-ID --revision 1
+cnvs report create ASM-ID --high-impact
+cnvs report preview REPORT-ID
+cnvs report review REPORT-ID --decision APPROVED --reviewer analyst --rationale "Reviewed sources, uncertainty and gaps"
+cnvs report reviews REPORT-ID
+cnvs report list --event-id CNVS-EVT-2026-10-08-0001
+cnvs report export REPORT-ID --directory .\reports
 ```
 
 Coverage JSON selects catalog country codes and, optionally, a subset of each
@@ -146,6 +156,15 @@ constraints. A registry entry must be explicitly analyst-approved and enabled
 before collection; the checked-in synthetic entry is pending and disabled.
 Scope changes require updating the requirements, configuration and validator
 together.
+
+Assessment JSON is validated against `schemas/assessment.schema.json`; its
+revision pins the linked event, source, claim and evidence record revisions.
+Review and rejection decisions apply to one immutable report snapshot.
+`cnvs report export` writes both formats only when the latest decision is
+`APPROVED`, and refuses to overwrite existing files. `report preview` is the
+analyst's pre-review inspection path. Reviewer names are operator-supplied
+labels, not authenticated identities; the CLI does not implement role-based
+access control, secure internal distribution or external publication.
 
 ### Source registry and collection
 

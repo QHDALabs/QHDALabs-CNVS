@@ -446,6 +446,34 @@ class NationalInformationMatrix:
     cells: tuple[CountryMatrixCell, ...]
 
 
+@dataclass(frozen=True)
+class ReportSnapshot:
+    report_id: str
+    event_id: str
+    assessment_id: str
+    assessment_revision: int
+    high_impact: bool
+    generated_at: str
+    input_snapshot_json: str
+    input_sha256: str
+    content_sha256: str
+    markdown: str
+    html: str
+    status: str
+    reviewed_by: str | None
+    reviewed_at: str | None
+    review_rationale: str | None
+
+
+@dataclass(frozen=True)
+class ReportReview:
+    report_id: str
+    decision: str
+    reviewed_by: str
+    reviewed_at: str
+    rationale: str
+
+
 CanonicalRecord: TypeAlias = Event | Source | Claim | Evidence | Assessment
 RECORD_TYPES: dict[str, type[CanonicalRecord]] = {
     model.record_type: model

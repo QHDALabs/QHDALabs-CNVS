@@ -1,7 +1,8 @@
 # Analyst Guide
 
-This guide describes the intended review discipline for CNVS records. The
-repository scaffold does not automate these steps.
+This guide describes the intended review discipline for CNVS records. The CLI
+supports versioned assessments and reviewed report snapshots; it does not
+authenticate users or enforce analyst/internal-reader roles.
 
 ## Review sequence
 
@@ -13,7 +14,8 @@ repository scaffold does not automate these steps.
 6. Record contradictions and evidence gaps.
 7. Assess occurrence, method and attribution independently.
 8. State what is known, unknown and assessed, with confidence and rationale.
-9. Have a human analyst review high-impact conclusions before publication.
+9. Review the exact report snapshot and record a reasoned human decision before
+   high-impact reports are approved for internal export.
 
 ## Reporting discipline
 
@@ -22,5 +24,27 @@ Use explicit labels for **FACT**, **CLAIM**, **ASSESSMENT**, **CONFIDENCE** and
 repetition into confirmation or present a model-generated statement as primary
 evidence.
 
-The sample report in `examples/event-report.json` demonstrates these
-distinctions; it is synthetic and is not an operational assessment.
+Create an assessment record from validated JSON with
+`cnvs assessment record --file assessment.json`, then create a report with
+`cnvs report create ASSESSMENT-ID --high-impact`. Inspect the stored draft using
+`cnvs report preview REPORT-ID` before recording an `APPROVED` or `REJECTED`
+decision with `cnvs report review REPORT-ID --decision ... --reviewer ...
+--rationale ...`. Approval records the reviewer label, timestamp and rationale
+against that report's immutable content; the latest decision controls whether
+local Markdown and HTML export is allowed. A later rejection blocks further
+export of that report. The assessment's `human_reviewed` flag alone never
+approves a report.
+
+Report citations display source, claim and evidence identifiers and revisions.
+Unknown confidence, unresolved attribution, contradictions, dependence and
+gaps must remain visible; do not turn repetition or coverage counts into
+independent confirmation. Reviewers should check the report's source and
+evidence links, provenance/independence, timeline, country coverage and
+limitations before approval.
+
+Reviewer identity is currently a CLI-supplied label and is not authenticated.
+This review log is an audit record, not proof of account identity or an
+authorization boundary. The sample report in `examples/event-report.json`
+demonstrates the distinctions; it is synthetic and is not an operational
+assessment. Reports are for internal use; the CLI does not publish them
+externally.
