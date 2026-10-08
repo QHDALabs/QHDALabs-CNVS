@@ -4,7 +4,9 @@ The Python CLI validates the reviewed MVP configuration, manages local SQLite
 persistence, supports explicitly approved public RSS/URL collection, and
 records source-grounded claim extraction candidates, traces provenance,
 supports reviewed independence groups, and stores reviewed evidence/claim
-relations with explicit evidence gaps. Automatic NLP/LLM extraction,
+relations with explicit evidence gaps. The national information matrix supports
+reviewed event-specific country/language plans, linked-source coverage counts
+and separately reviewed analyst assessments. Automatic NLP/LLM extraction,
 automated event matching or contradiction detection, report generation,
 authentication and an API are not implemented.
 
@@ -112,7 +114,23 @@ cnvs provenance assign --member-type DOCUMENT --member-id DOCUMENT-ID --group-id
 cnvs provenance review-assignment ASSIGNMENT-ID --decision ACCEPTED --reviewer reviewer --rationale "The shared chain is supported by the confirmed link" --supporting-link LINK-ID
 cnvs provenance assignments --group-id IG-001 --status ACCEPTED
 cnvs provenance assignment-history ASSIGNMENT-ID
+cnvs matrix plan CNVS-EVT-2026-10-08-0001 --file coverage.json --proposed-by analyst --rationale "Event-specific country scope"
+cnvs matrix review PLAN-ID --decision ACCEPTED --reviewer reviewer --rationale "Coverage scope reviewed"
+cnvs matrix plans --event-id CNVS-EVT-2026-10-08-0001
+cnvs matrix assess PLAN-ID PL --file country-assessment.json --analyst analyst --rationale "Assessment based on the linked source record"
+cnvs matrix review-assessment ASSESSMENT-ID --decision ACCEPTED --reviewer reviewer --rationale "Assessment and confidence dimensions reviewed"
+cnvs matrix assessments --plan-id PLAN-ID
+cnvs matrix show CNVS-EVT-2026-10-08-0001
 ```
+
+Coverage JSON selects catalog country codes and, optionally, a subset of each
+country's configured languages; omitted languages select the full country
+language set. An optional `outside_catalog` array contains `{ "country":
+"...", "reason": "..." }` entries. Assessment JSON fields and matrix count
+semantics are documented in [DATA_MODEL.md](./DATA_MODEL.md). Counts include
+only currently linked event documents; primary evidence additionally requires
+effective `VERIFIED` status and `PRIMARY` directness. Country confidence is
+entered and reviewed by analysts, never inferred from article volume.
 
 Configuration directory resolution is:
 

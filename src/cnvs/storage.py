@@ -4,6 +4,7 @@ import re
 import sqlite3
 import threading
 import uuid
+from collections.abc import Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass, replace
 from datetime import datetime, timezone
@@ -18,6 +19,9 @@ from cnvs.models import (
     ClaimEvidenceLink,
     ClaimExtraction,
     CollectionResult,
+    CountryCoveragePlan,
+    CountryMatrixAssessment,
+    CountryMatrixCell,
     Evidence,
     EvidenceGap,
     EvidenceNote,
@@ -27,6 +31,7 @@ from cnvs.models import (
     EventSourceMatch,
     IndependenceAssignment,
     JsonValue,
+    NationalInformationMatrix,
     NormalizedDocument,
     ProvenanceLink,
     ProvenanceOriginAssessment,
@@ -68,6 +73,10 @@ def _utc_now() -> str:
 
 
 def _json_text(payload: dict[str, JsonValue]) -> str:
+    return json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+
+
+def _json_array_text(payload: Sequence[JsonValue]) -> str:
     return json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
 
 
@@ -2428,6 +2437,840 @@ class Database:
                 )
             )
         return result
+
+    @staticmethod
+    def _country_coverage_plan_from_row(row: sqlite3.Row) -> CountryCoveragePlan:
+        return CountryCoveragePlan(
+            plan_id=row["plan_id"],
+            event_id=row["event_id"],
+            revision=row["revision"],
+            config_sha256=row["config_sha256"],
+            countries=tuple(json.loads(row["countries_json"])),
+            outside_catalog=tuple(json.loads(row["outside_catalog_json"])),
+            proposed_by=row["proposed_by"],
+            proposed_at=row["proposed_at"],
+            rationale=row["rationale"],
+            status=row["status"] or "PENDING",
+            reviewed_by=row["reviewed_by"],
+            reviewed_at=row["reviewed_at"],
+            review_rationale=row["review_rationale"],
+        )
+
+    @staticmethod
+    def _country_coverage_plan_select() -> str:
+        return """
+            SELECT plan.*,
+                review.decision AS status,
+                review.reviewed_by,
+                review.reviewed_at,
+                review.rationale AS review_rationale
+            FROM event_country_coverage_plans AS plan
+            LEFT JOIN event_country_coverage_reviews AS review
+                ON review.review_id = (
+                    SELECT latest.review_id
+                    FROM event_country_coverage_reviews AS latest
+                    WHERE latest.plan_id = plan.plan_id
+                    ORDER BY latest.rowid DESC
+                    LIMIT 1
+                )
+        """
+
+    def create_country_coverage_plan(
+        self,
+        *,
+        event_id: str,
+        config_sha256: str,
+        countries: list[dict[str, JsonValue]],
+        outside_catalog: list[dict[str, JsonValue]],
+        proposed_by: str,
+        proposed_at: str,
+        rationale: str,
+    ) -> CountryCoveragePlan:
+        if not re.fullmatch(r"[0-9a-f]{64}", config_sha256):
+            raise StorageError("Country coverage configuration digest must be SHA-256.")
+        if not countries:
+            raise StorageError("An event coverage plan must select at least one country.")
+        if not proposed_by.strip() or not rationale.strip():
+            raise StorageError("A country coverage proposal needs an analyst and rationale.")
+        _validate_timestamp(proposed_at, "proposed_at")
+        codes: set[str] = set()
+        for country in countries:
+            code = country.get("code")
+            languages = country.get("languages")
+            if (
+                not isinstance(code, str)
+                or not re.fullmatch(r"[A-Z]{2}", code)
+                or code in codes
+                or not isinstance(languages, list)
+                or not languages
+                or any(not isinstance(language, str) or not language.strip()
+                       for language in languages)
+                or len(languages) != len(set(languages))
+            ):
+                raise StorageError("Coverage countries need unique codes and language lists.")
+            codes.add(code)
+        outside_countries: set[str] = set()
+        for item in outside_catalog:
+            country = item.get("country")
+            reason = item.get("reason")
+            if (
+                not isinstance(country, str)
+                or not country.strip()
+                or not isinstance(reason, str)
+                or not reason.strip()
+            ):
+                raise StorageError(
+                    "Out-of-catalog coverage needs an unselected country and a rationale."
+                )
+            normalized_country = country.strip()
+            if normalized_country in codes or normalized_country in outside_countries:
+                raise StorageError(
+                    "Out-of-catalog countries must be unselected and unique."
+                )
+            outside_countries.add(normalized_country)
+        plan_id = uuid.uuid4().hex
+        with self._lock, self._write_transaction() as connection:
+            self._require_record(connection, "event", event_id)
+            pending = connection.execute(
+                self._country_coverage_plan_select()
+                + """
+                    WHERE plan.event_id = ? AND COALESCE(review.decision, 'PENDING')
+                        = 'PENDING'
+                """,
+                (event_id,),
+            ).fetchone()
+            if pending is not None:
+                raise StorageError(
+                    f"Event {event_id} already has a pending country coverage plan."
+                )
+            revision = connection.execute(
+                """
+                SELECT COALESCE(MAX(revision), 0) + 1 AS revision
+                FROM event_country_coverage_plans WHERE event_id = ?
+                """,
+                (event_id,),
+            ).fetchone()["revision"]
+            connection.execute(
+                """
+                INSERT INTO event_country_coverage_plans (
+                    plan_id, event_id, revision, config_sha256, countries_json,
+                    outside_catalog_json, proposed_by, proposed_at, rationale
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    plan_id, event_id, revision, config_sha256,
+                    _json_array_text(countries),
+                    _json_array_text(outside_catalog),
+                    proposed_by.strip(), proposed_at, rationale.strip(),
+                ),
+            )
+        return self.country_coverage_plans(plan_id=plan_id)[0]
+
+    def country_coverage_plans(
+        self, *, event_id: str | None = None, plan_id: str | None = None
+    ) -> list[CountryCoveragePlan]:
+        with self._connect() as connection:
+            rows = connection.execute(
+                self._country_coverage_plan_select()
+                + """
+                    WHERE (? IS NULL OR plan.event_id = ?)
+                      AND (? IS NULL OR plan.plan_id = ?)
+                    ORDER BY plan.event_id, plan.revision
+                """,
+                (event_id, event_id, plan_id, plan_id),
+            ).fetchall()
+        return [self._country_coverage_plan_from_row(row) for row in rows]
+
+    def review_country_coverage_plan(
+        self,
+        *,
+        plan_id: str,
+        decision: str,
+        reviewed_by: str,
+        reviewed_at: str,
+        rationale: str,
+    ) -> CountryCoveragePlan:
+        if decision not in {"ACCEPTED", "REJECTED", "UNRESOLVED", "SUPERSEDED"}:
+            raise StorageError("Unsupported country coverage plan review decision.")
+        if not reviewed_by.strip() or not rationale.strip():
+            raise StorageError("Country coverage review needs a reviewer and rationale.")
+        _validate_timestamp(reviewed_at, "reviewed_at")
+        review_id = uuid.uuid4().hex
+        with self._lock, self._write_transaction() as connection:
+            plan = connection.execute(
+                "SELECT event_id FROM event_country_coverage_plans WHERE plan_id = ?",
+                (plan_id,),
+            ).fetchone()
+            if plan is None:
+                raise StorageError(f"Country coverage plan {plan_id} was not found.")
+            if decision == "SUPERSEDED":
+                current = connection.execute(
+                    self._country_coverage_plan_select()
+                    + """
+                        WHERE plan.event_id = ? AND plan.plan_id != ?
+                          AND review.decision = 'PENDING'
+                        ORDER BY plan.revision DESC LIMIT 1
+                    """,
+                    (plan["event_id"], plan_id),
+                ).fetchone()
+                if current is None:
+                    raise StorageError(
+                        "A coverage plan can be superseded only when its replacement "
+                        "has a pending proposal."
+                    )
+            if decision == "ACCEPTED":
+                active = connection.execute(
+                    self._country_coverage_plan_select()
+                    + """
+                        WHERE plan.event_id = ? AND plan.plan_id != ?
+                          AND review.decision = 'ACCEPTED'
+                        ORDER BY plan.revision DESC LIMIT 1
+                    """,
+                    (plan["event_id"], plan_id),
+                ).fetchone()
+                if active is not None:
+                    connection.execute(
+                        """
+                        INSERT INTO event_country_coverage_reviews (
+                            review_id, plan_id, decision, reviewed_by, reviewed_at, rationale
+                        ) VALUES (?, ?, 'SUPERSEDED', ?, ?, ?)
+                        """,
+                        (
+                            uuid.uuid4().hex,
+                            active["plan_id"],
+                            reviewed_by.strip(),
+                            reviewed_at,
+                            f"Superseded by accepted plan {plan_id}: {rationale.strip()}",
+                        ),
+                    )
+            connection.execute(
+                """
+                INSERT INTO event_country_coverage_reviews (
+                    review_id, plan_id, decision, reviewed_by, reviewed_at, rationale
+                ) VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    review_id, plan_id, decision, reviewed_by.strip(),
+                    reviewed_at, rationale.strip(),
+                ),
+            )
+        return self.country_coverage_plans(plan_id=plan_id)[0]
+
+    @staticmethod
+    def _country_matrix_assessment_select() -> str:
+        return """
+            SELECT assessment.*,
+                review.decision AS status,
+                review.reviewed_by,
+                review.reviewed_at,
+                review.rationale AS review_rationale
+            FROM country_matrix_assessments AS assessment
+            LEFT JOIN country_matrix_assessment_reviews AS review
+                ON review.review_id = (
+                    SELECT latest.review_id
+                    FROM country_matrix_assessment_reviews AS latest
+                    WHERE latest.assessment_id = assessment.assessment_id
+                    ORDER BY latest.rowid DESC
+                    LIMIT 1
+                )
+        """
+
+    @staticmethod
+    def _country_matrix_assessment_from_row(
+        row: sqlite3.Row,
+    ) -> CountryMatrixAssessment:
+        return CountryMatrixAssessment(
+            assessment_id=row["assessment_id"],
+            plan_id=row["plan_id"],
+            event_id=row["event_id"],
+            country_code=row["country_code"],
+            dominant_frame=row["dominant_frame"],
+            attribution_summary=row["attribution_summary"],
+            occurrence_confidence=row["occurrence_confidence"],
+            method_confidence=row["method_confidence"],
+            attribution_confidence=row["attribution_confidence"],
+            omissions=row["omissions"],
+            contradictions=row["contradictions"],
+            supporting_source_ids=tuple(json.loads(row["supporting_source_ids_json"])),
+            supporting_claim_ids=tuple(json.loads(row["supporting_claim_ids_json"])),
+            supporting_evidence_ids=tuple(json.loads(row["supporting_evidence_ids_json"])),
+            analyst=row["analyst"],
+            created_at=row["created_at"],
+            rationale=row["rationale"],
+            status=row["status"] or "PENDING",
+            reviewed_by=row["reviewed_by"],
+            reviewed_at=row["reviewed_at"],
+            review_rationale=row["review_rationale"],
+        )
+
+    def _matrix_country_source_context(
+        self, connection: sqlite3.Connection, event_id: str, country_code: str
+    ) -> tuple[set[str], set[str]]:
+        rows = connection.execute(
+            """
+            SELECT document.document_id, document.source_id,
+                   collection.source_metadata_json
+            FROM event_source_matches AS match
+            JOIN event_source_match_reviews AS match_review
+              ON match_review.review_id = (
+                  SELECT latest.review_id
+                  FROM event_source_match_reviews AS latest
+                  WHERE latest.match_id = match.match_id
+                  ORDER BY latest.rowid DESC LIMIT 1
+              )
+            JOIN normalized_documents AS document
+              ON document.document_id = match.document_id
+            JOIN collection_attempts AS collection
+              ON collection.collection_id = document.collection_id
+            WHERE match.event_id = ? AND match_review.decision = 'LINKED'
+            """,
+            (event_id,),
+        ).fetchall()
+        contexts: dict[str, dict[str, object]] = {}
+        conflicting_sources: set[str] = set()
+        source_documents: dict[str, set[str]] = {}
+        for row in rows:
+            metadata = json.loads(row["source_metadata_json"])
+            context = {
+                "country": metadata.get("country"),
+                "source_class": metadata.get("source_class"),
+            }
+            source_id = row["source_id"]
+            previous = contexts.setdefault(source_id, context)
+            if previous != context:
+                conflicting_sources.add(source_id)
+            source_documents.setdefault(source_id, set()).add(row["document_id"])
+        sources = {
+            source_id
+            for source_id, context in contexts.items()
+            if source_id not in conflicting_sources
+            and context.get("country") == country_code
+        }
+        documents = set().union(
+            *(source_documents[source_id] for source_id in sources)
+        ) if sources else set()
+        return sources, documents
+
+    def record_country_matrix_assessment(
+        self,
+        *,
+        plan_id: str,
+        country_code: str,
+        config_sha256: str,
+        dominant_frame: str,
+        attribution_summary: str,
+        occurrence_confidence: str,
+        method_confidence: str,
+        attribution_confidence: str,
+        omissions: str,
+        contradictions: str,
+        supporting_source_ids: list[str],
+        supporting_claim_ids: list[str],
+        supporting_evidence_ids: list[str],
+        analyst: str,
+        created_at: str,
+        rationale: str,
+    ) -> CountryMatrixAssessment:
+        confidence_values = {"LOW", "MEDIUM", "HIGH", "UNKNOWN"}
+        if any(
+            value not in confidence_values
+            for value in (
+                occurrence_confidence, method_confidence, attribution_confidence
+            )
+        ):
+            raise StorageError("Each confidence dimension must be LOW, MEDIUM, HIGH or UNKNOWN.")
+        text_values = (
+            dominant_frame, attribution_summary, omissions, contradictions,
+            analyst, rationale,
+        )
+        if any(not value.strip() for value in text_values):
+            raise StorageError("Matrix assessment fields and rationale must not be empty.")
+        if len(supporting_source_ids) != len(set(supporting_source_ids)):
+            raise StorageError("Matrix assessment source references must not contain duplicates.")
+        if len(supporting_claim_ids) != len(set(supporting_claim_ids)) or len(
+            supporting_evidence_ids
+        ) != len(set(supporting_evidence_ids)):
+            raise StorageError("Matrix assessment references must not contain duplicates.")
+        _validate_timestamp(created_at, "created_at")
+        assessment_id = uuid.uuid4().hex
+        with self._lock, self._write_transaction() as connection:
+            plan = connection.execute(
+                """
+                SELECT plan.event_id, plan.config_sha256,
+                       review.decision AS status
+                FROM event_country_coverage_plans AS plan
+                LEFT JOIN event_country_coverage_reviews AS review
+                  ON review.review_id = (
+                      SELECT latest.review_id
+                      FROM event_country_coverage_reviews AS latest
+                      WHERE latest.plan_id = plan.plan_id
+                      ORDER BY latest.rowid DESC LIMIT 1
+                  )
+                WHERE plan.plan_id = ?
+                """,
+                (plan_id,),
+            ).fetchone()
+            if plan is None:
+                raise StorageError(f"Country coverage plan {plan_id} was not found.")
+            if plan["status"] != "ACCEPTED":
+                raise StorageError("Country assessments require an accepted coverage plan.")
+            if plan["config_sha256"] != config_sha256:
+                raise StorageError(
+                    "The country/language configuration changed; propose and review a new coverage plan."
+                )
+            countries_row = connection.execute(
+                "SELECT countries_json FROM event_country_coverage_plans WHERE plan_id = ?",
+                (plan_id,),
+            ).fetchone()
+            countries = json.loads(countries_row["countries_json"])
+            if not any(country["code"] == country_code for country in countries):
+                raise StorageError(
+                    f"Country {country_code} is not selected in plan {plan_id}."
+                )
+            pending_assessment = connection.execute(
+                self._country_matrix_assessment_select()
+                + """
+                    WHERE assessment.plan_id = ? AND assessment.country_code = ?
+                      AND COALESCE(review.decision, 'PENDING') = 'PENDING'
+                    LIMIT 1
+                """,
+                (plan_id, country_code),
+            ).fetchone()
+            if pending_assessment is not None:
+                raise StorageError(
+                    f"Country {country_code} already has a pending matrix assessment."
+                )
+            country_sources, _ = self._matrix_country_source_context(
+                connection, plan["event_id"], country_code
+            )
+            if not set(supporting_source_ids).issubset(country_sources):
+                raise StorageError(
+                    "Matrix assessment sources must be linked to this event and country."
+                )
+            for claim_id in supporting_claim_ids:
+                claim = self._require_record(connection, "claim", claim_id)
+                if (
+                    claim["event_id"] != plan["event_id"]
+                    or claim["source_id"] not in country_sources
+                ):
+                    raise StorageError(
+                        f"Claim {claim_id} is not linked to this event and country."
+                    )
+            country_evidence_ids = {
+                row["record_id"]
+                for row in connection.execute(
+                    "SELECT record_id, payload_json FROM canonical_records "
+                    "WHERE record_type = 'evidence'"
+                ).fetchall()
+                if json.loads(row["payload_json"])["event_id"] == plan["event_id"]
+                and json.loads(row["payload_json"])["source_id"] in country_sources
+            }
+            if not set(supporting_evidence_ids).issubset(country_evidence_ids):
+                raise StorageError(
+                    "Matrix assessment evidence must be linked to this event and country."
+                )
+            connection.execute(
+                """
+                INSERT INTO country_matrix_assessments (
+                    assessment_id, plan_id, event_id, country_code,
+                    dominant_frame, attribution_summary, occurrence_confidence,
+                    method_confidence, attribution_confidence, omissions,
+                    contradictions, supporting_source_ids_json,
+                    supporting_claim_ids_json, supporting_evidence_ids_json,
+                    analyst, created_at, rationale
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    assessment_id, plan_id, plan["event_id"], country_code,
+                    dominant_frame.strip(), attribution_summary.strip(),
+                    occurrence_confidence, method_confidence, attribution_confidence,
+                    omissions.strip(), contradictions.strip(),
+                    _json_array_text(supporting_source_ids),
+                    _json_array_text(supporting_claim_ids),
+                    _json_array_text(supporting_evidence_ids),
+                    analyst.strip(), created_at, rationale.strip(),
+                ),
+            )
+        return self.country_matrix_assessments(assessment_id=assessment_id)[0]
+
+    def country_matrix_assessments(
+        self,
+        *,
+        plan_id: str | None = None,
+        country_code: str | None = None,
+        assessment_id: str | None = None,
+    ) -> list[CountryMatrixAssessment]:
+        with self._connect() as connection:
+            rows = connection.execute(
+                self._country_matrix_assessment_select()
+                + """
+                    WHERE (? IS NULL OR assessment.plan_id = ?)
+                      AND (? IS NULL OR assessment.country_code = ?)
+                      AND (? IS NULL OR assessment.assessment_id = ?)
+                    ORDER BY assessment.created_at, assessment.assessment_id
+                """,
+                (
+                    plan_id, plan_id, country_code, country_code,
+                    assessment_id, assessment_id,
+                ),
+            ).fetchall()
+        return [self._country_matrix_assessment_from_row(row) for row in rows]
+
+    def review_country_matrix_assessment(
+        self,
+        *,
+        assessment_id: str,
+        decision: str,
+        reviewed_by: str,
+        reviewed_at: str,
+        rationale: str,
+    ) -> CountryMatrixAssessment:
+        if decision not in {"ACCEPTED", "REJECTED", "UNRESOLVED"}:
+            raise StorageError("Unsupported country matrix assessment decision.")
+        if not reviewed_by.strip() or not rationale.strip():
+            raise StorageError("Matrix assessment review needs a reviewer and rationale.")
+        _validate_timestamp(reviewed_at, "reviewed_at")
+        review_id = uuid.uuid4().hex
+        with self._lock, self._write_transaction() as connection:
+            assessment = connection.execute(
+                """
+                SELECT plan_id, country_code FROM country_matrix_assessments
+                WHERE assessment_id = ?
+                """,
+                (assessment_id,),
+            ).fetchone()
+            if assessment is None:
+                raise StorageError(f"Matrix assessment {assessment_id} was not found.")
+            if decision == "ACCEPTED":
+                active = connection.execute(
+                    self._country_matrix_assessment_select()
+                    + """
+                        WHERE assessment.plan_id = ? AND assessment.country_code = ?
+                          AND assessment.assessment_id != ?
+                          AND review.decision = 'ACCEPTED'
+                        LIMIT 1
+                    """,
+                    (assessment["plan_id"], assessment["country_code"], assessment_id),
+                ).fetchone()
+                if active is not None:
+                    connection.execute(
+                        """
+                        INSERT INTO country_matrix_assessment_reviews (
+                            review_id, assessment_id, decision, reviewed_by,
+                            reviewed_at, rationale
+                        ) VALUES (?, ?, 'UNRESOLVED', ?, ?, ?)
+                        """,
+                        (
+                            uuid.uuid4().hex,
+                            active["assessment_id"],
+                            reviewed_by.strip(),
+                            reviewed_at,
+                            f"Superseded by assessment {assessment_id}: {rationale.strip()}",
+                        ),
+                    )
+            connection.execute(
+                """
+                INSERT INTO country_matrix_assessment_reviews (
+                    review_id, assessment_id, decision, reviewed_by,
+                    reviewed_at, rationale
+                ) VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    review_id, assessment_id, decision,
+                    reviewed_by.strip(), reviewed_at, rationale.strip(),
+                ),
+            )
+        return self.country_matrix_assessments(assessment_id=assessment_id)[0]
+
+    def national_information_matrix(
+        self, *, event_id: str, config_sha256: str
+    ) -> NationalInformationMatrix:
+        with self._connect() as connection:
+            self._require_record(connection, "event", event_id)
+            active = connection.execute(
+                self._country_coverage_plan_select()
+                + """
+                    WHERE plan.event_id = ? AND review.decision = 'ACCEPTED'
+                    ORDER BY plan.revision DESC LIMIT 1
+                """,
+                (event_id,),
+            ).fetchone()
+            if active is None:
+                plans = connection.execute(
+                    self._country_coverage_plan_select()
+                    + """
+                        WHERE plan.event_id = ?
+                        ORDER BY plan.revision DESC LIMIT 1
+                    """,
+                    (event_id,),
+                ).fetchone()
+                if plans is None:
+                    raise StorageError(f"Event {event_id} has no country coverage plan.")
+                active = plans
+            plan = self._country_coverage_plan_from_row(active)
+            if plan.status != "ACCEPTED":
+                return NationalInformationMatrix(
+                    event_id=event_id,
+                    plan=plan,
+                    config_matches=plan.config_sha256 == config_sha256,
+                    cells=(),
+                )
+            matches = connection.execute(
+                """
+                SELECT document.document_id, document.source_id,
+                       document.language, document.language_review_status,
+                       collection.source_metadata_json
+                FROM event_source_matches AS match
+                JOIN event_source_match_reviews AS match_review
+                  ON match_review.review_id = (
+                      SELECT latest.review_id
+                      FROM event_source_match_reviews AS latest
+                      WHERE latest.match_id = match.match_id
+                      ORDER BY latest.rowid DESC LIMIT 1
+                  )
+                JOIN normalized_documents AS document
+                  ON document.document_id = match.document_id
+                JOIN collection_attempts AS collection
+                  ON collection.collection_id = document.collection_id
+                WHERE match.event_id = ? AND match_review.decision = 'LINKED'
+                """,
+                (event_id,),
+            ).fetchall()
+            evidence_rows = connection.execute(
+                """
+                SELECT evidence.record_id, evidence.payload_json,
+                    COALESCE(
+                        (
+                            SELECT review.verification_status
+                            FROM evidence_verification_reviews AS review
+                            WHERE review.evidence_id = evidence.record_id
+                            ORDER BY review.rowid DESC LIMIT 1
+                        ),
+                        json_extract(evidence.payload_json, '$.verification_status')
+                    ) AS current_verification_status
+                FROM canonical_records AS evidence
+                WHERE evidence.record_type = 'evidence'
+                """
+            ).fetchall()
+            claim_rows = connection.execute(
+                "SELECT record_id, payload_json FROM canonical_records "
+                "WHERE record_type = 'claim'"
+            ).fetchall()
+            latest_relations = connection.execute(
+                """
+                SELECT link.claim_id, link.relationship
+                FROM claim_evidence_links AS link
+                JOIN claim_evidence_link_reviews AS review
+                  ON review.review_id = (
+                      SELECT latest.review_id
+                      FROM claim_evidence_link_reviews AS latest
+                      WHERE latest.link_id = link.link_id
+                      ORDER BY latest.rowid DESC LIMIT 1
+                  )
+                WHERE link.event_id = ? AND review.decision = 'LINKED'
+                """,
+                (event_id,),
+            ).fetchall()
+            assignment_rows = connection.execute(
+                self._independence_assignment_select()
+                + """
+                    WHERE review.decision = 'ACCEPTED'
+                      AND assignment.rowid = (
+                          SELECT MAX(current.rowid)
+                          FROM independence_assignments AS current
+                          WHERE current.member_type = assignment.member_type
+                            AND current.member_id = assignment.member_id
+                      )
+                """
+            ).fetchall()
+            assessment_rows = connection.execute(
+                self._country_matrix_assessment_select()
+                + """
+                    WHERE assessment.plan_id = ?
+                    ORDER BY CASE review.decision
+                        WHEN 'ACCEPTED' THEN 0
+                        WHEN 'PENDING' THEN 1
+                        ELSE 2
+                    END,
+                    assessment.created_at DESC, assessment.rowid DESC
+                """,
+                (plan.plan_id,),
+            ).fetchall()
+
+        source_context: dict[str, dict[str, object]] = {}
+        conflicting_sources: set[str] = set()
+        conflicting_countries: dict[str, set[str]] = {}
+        documents_by_country: dict[str, set[str]] = {}
+        languages_by_country: dict[str, set[str]] = {}
+        for row in matches:
+            metadata = json.loads(row["source_metadata_json"])
+            country = metadata.get("country")
+            if not isinstance(country, str):
+                continue
+            context = {
+                "country": country,
+                "source_class": metadata.get("source_class"),
+            }
+            previous_context = source_context.get(row["source_id"])
+            if previous_context is None:
+                source_context[row["source_id"]] = context
+            elif previous_context != context:
+                conflicting_sources.add(row["source_id"])
+                for affected_country in (previous_context["country"], country):
+                    if isinstance(affected_country, str):
+                        conflicting_countries.setdefault(affected_country, set()).add(
+                            row["source_id"]
+                        )
+            documents_by_country.setdefault(country, set()).add(row["document_id"])
+            if (
+                row["language_review_status"] == "RECORDED"
+                and row["language"] != "unknown"
+            ):
+                languages_by_country.setdefault(country, set()).add(row["language"])
+        for source_id in conflicting_sources:
+            source_context.pop(source_id, None)
+
+        source_ids_by_country: dict[str, set[str]] = {}
+        for source_id, context in source_context.items():
+            country = context["country"]
+            if isinstance(country, str):
+                source_ids_by_country.setdefault(country, set()).add(source_id)
+        claims_by_country: dict[str, set[str]] = {}
+        for row in claim_rows:
+            payload = json.loads(row["payload_json"])
+            if payload["event_id"] == event_id:
+                context = source_context.get(payload["source_id"])
+                country = context.get("country") if context is not None else None
+                if isinstance(country, str):
+                    claims_by_country.setdefault(country, set()).add(row["record_id"])
+        evidence_by_country: dict[str, list[dict[str, JsonValue]]] = {}
+        for row in evidence_rows:
+            if row["current_verification_status"] != "VERIFIED":
+                continue
+            payload = json.loads(row["payload_json"])
+            if payload["event_id"] == event_id:
+                context = source_context.get(payload["source_id"])
+                country = context.get("country") if context is not None else None
+                if isinstance(country, str):
+                    evidence_by_country.setdefault(country, []).append(payload)
+        relation_counts: dict[str, dict[str, int]] = {}
+        for row in latest_relations:
+            country = next(
+                (
+                    country_code
+                    for country_code, claim_ids in claims_by_country.items()
+                    if row["claim_id"] in claim_ids
+                ),
+                None,
+            )
+            if country is not None:
+                counts = relation_counts.setdefault(country, {"SUPPORTS": 0, "CONTRADICTS": 0})
+                if row["relationship"] in counts:
+                    counts[row["relationship"]] += 1
+        groups_by_member: dict[tuple[str, str], set[str]] = {}
+        for row in assignment_rows:
+            groups_by_member.setdefault(
+                (row["member_type"], row["member_id"]), set()
+            ).add(row["group_id"])
+
+        latest_assessments: dict[str, CountryMatrixAssessment] = {}
+        for row in assessment_rows:
+            latest_assessments.setdefault(
+                row["country_code"], self._country_matrix_assessment_from_row(row)
+            )
+
+        cells: list[CountryMatrixCell] = []
+        for country in plan.countries:
+            country_code = str(country["code"])
+            raw_languages = country.get("languages")
+            selected_languages = (
+                tuple(item for item in raw_languages if isinstance(item, str))
+                if isinstance(raw_languages, list)
+                else ()
+            )
+            docs = documents_by_country.get(country_code, set())
+            sources = source_ids_by_country.get(country_code, set())
+            metadata_classes = {
+                source_context[source_id].get("source_class")
+                for source_id in sources
+                if source_id in source_context
+            }
+            evidence = evidence_by_country.get(country_code, [])
+            primary_evidence = sum(
+                1 for item in evidence if item.get("directness") == "PRIMARY"
+            )
+            uncovered = tuple(
+                language
+                for language in selected_languages
+                if language not in languages_by_country.get(country_code, set())
+            )
+            gaps: list[str] = []
+            if not docs:
+                gaps.append("No confirmed event-linked reporting documents.")
+            if not uncovered:
+                pass
+            elif docs:
+                gaps.extend(f"No confirmed original-language document for {language}."
+                            for language in uncovered)
+            else:
+                gaps.extend(f"Language {language} has no confirmed coverage."
+                            for language in uncovered)
+            if "INSTITUTIONAL_STATEMENT" not in metadata_classes:
+                gaps.append("No linked institutional statement.")
+            if primary_evidence == 0:
+                gaps.append("No verified primary-directness evidence record.")
+            conflicting = conflicting_countries.get(country_code, set())
+            if conflicting:
+                gaps.append(
+                    f"{len(conflicting)} linked source(s) have conflicting collection "
+                    "metadata and are excluded from source, claim and evidence counts."
+                )
+            groups: set[str] = set()
+            for source_id in sources:
+                groups.update(groups_by_member.get(("SOURCE", source_id), set()))
+            for document_id in docs:
+                groups.update(groups_by_member.get(("DOCUMENT", document_id), set()))
+            for item in evidence:
+                groups.update(
+                    groups_by_member.get(("EVIDENCE", str(item["evidence_id"])), set())
+                )
+            cells.append(
+                CountryMatrixCell(
+                    country_code=country_code,
+                    country_name=str(country["name"]),
+                    languages=selected_languages,
+                    reporting_documents=len(docs),
+                    reporting_sources=len(sources),
+                    institutional_sources=sum(
+                        1 for source_id in sources
+                        if source_context[source_id].get("source_class")
+                        == "INSTITUTIONAL_STATEMENT"
+                    ),
+                    primary_observation_sources=sum(
+                        1 for source_id in sources
+                        if source_context[source_id].get("source_class")
+                        == "PRIMARY_OBSERVATION"
+                    ),
+                    primary_evidence=primary_evidence,
+                    claims=len(claims_by_country.get(country_code, set())),
+                    supporting_relations=relation_counts.get(country_code, {}).get(
+                        "SUPPORTS", 0
+                    ),
+                    contradicting_relations=relation_counts.get(country_code, {}).get(
+                        "CONTRADICTS", 0
+                    ),
+                    accepted_independence_groups=tuple(sorted(groups)),
+                    uncovered_languages=uncovered,
+                    coverage_gaps=tuple(gaps),
+                    assessment=latest_assessments.get(country_code),
+                )
+            )
+        return NationalInformationMatrix(
+            event_id=event_id,
+            plan=plan,
+            config_matches=plan.config_sha256 == config_sha256,
+            cells=tuple(cells),
+        )
 
     @staticmethod
     def _duplicate_relationship_from_row(row: sqlite3.Row) -> DuplicateRelationship:

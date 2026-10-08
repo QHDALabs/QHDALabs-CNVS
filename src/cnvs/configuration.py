@@ -1,4 +1,5 @@
 from dataclasses import dataclass
+from hashlib import sha256
 from pathlib import Path
 from typing import Any
 
@@ -72,6 +73,20 @@ class ConfigurationSummary:
     language_count: int
     event_type_count: int
     source_type_count: int
+
+
+@dataclass(frozen=True)
+class CountryCoverageCatalogEntry:
+    code: str
+    name: str
+    languages: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class CountryCoverageCatalog:
+    entries: tuple[CountryCoverageCatalogEntry, ...]
+    languages: frozenset[str]
+    config_sha256: str
 
 
 def _load_mapping(path: Path) -> dict[str, Any]:
@@ -299,4 +314,33 @@ def validate_configuration(config_dir: Path) -> ConfigurationSummary:
         language_count=len(language_code_set),
         event_type_count=len(supported_events),
         source_type_count=len(source_types),
+    )
+
+
+def load_country_coverage_catalog(config_dir: Path) -> CountryCoverageCatalog:
+    """Load the reviewed country/language catalog and bind it to its file digests."""
+    validate_configuration(config_dir)
+    country_path = config_dir / "countries.yaml"
+    language_path = config_dir / "languages.yaml"
+    country_document = _load_mapping(country_path)
+    language_document = _load_mapping(language_path)
+    country_entries = country_document["countries"]
+    language_entries = language_document["languages"]
+    if not isinstance(country_entries, list) or not isinstance(language_entries, list):
+        raise ConfigurationError("Country and language catalogs must be YAML lists.")
+    entries = tuple(
+        CountryCoverageCatalogEntry(
+            code=entry["code"],
+            name=entry["name"],
+            languages=tuple(entry["languages"]),
+        )
+        for entry in country_entries
+    )
+    config_digest = sha256(
+        country_path.read_bytes() + b"\0" + language_path.read_bytes()
+    ).hexdigest()
+    return CountryCoverageCatalog(
+        entries=entries,
+        languages=frozenset(entry["code"] for entry in language_entries),
+        config_sha256=config_digest,
     )

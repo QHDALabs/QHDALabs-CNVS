@@ -377,6 +377,75 @@ class EvidenceGap:
     review_rationale: str | None
 
 
+@dataclass(frozen=True)
+class CountryCoveragePlan:
+    plan_id: str
+    event_id: str
+    revision: int
+    config_sha256: str
+    countries: tuple[dict[str, JsonValue], ...]
+    outside_catalog: tuple[dict[str, JsonValue], ...]
+    proposed_by: str
+    proposed_at: str
+    rationale: str
+    status: str
+    reviewed_by: str | None
+    reviewed_at: str | None
+    review_rationale: str | None
+
+
+@dataclass(frozen=True)
+class CountryMatrixAssessment:
+    assessment_id: str
+    plan_id: str
+    event_id: str
+    country_code: str
+    dominant_frame: str
+    attribution_summary: str
+    occurrence_confidence: str
+    method_confidence: str
+    attribution_confidence: str
+    omissions: str
+    contradictions: str
+    supporting_source_ids: tuple[str, ...]
+    supporting_claim_ids: tuple[str, ...]
+    supporting_evidence_ids: tuple[str, ...]
+    analyst: str
+    created_at: str
+    rationale: str
+    status: str
+    reviewed_by: str | None
+    reviewed_at: str | None
+    review_rationale: str | None
+
+
+@dataclass(frozen=True)
+class CountryMatrixCell:
+    country_code: str
+    country_name: str
+    languages: tuple[str, ...]
+    reporting_documents: int
+    reporting_sources: int
+    institutional_sources: int
+    primary_observation_sources: int
+    primary_evidence: int
+    claims: int
+    supporting_relations: int
+    contradicting_relations: int
+    accepted_independence_groups: tuple[str, ...]
+    uncovered_languages: tuple[str, ...]
+    coverage_gaps: tuple[str, ...]
+    assessment: CountryMatrixAssessment | None
+
+
+@dataclass(frozen=True)
+class NationalInformationMatrix:
+    event_id: str
+    plan: CountryCoveragePlan
+    config_matches: bool
+    cells: tuple[CountryMatrixCell, ...]
+
+
 CanonicalRecord: TypeAlias = Event | Source | Claim | Evidence | Assessment
 RECORD_TYPES: dict[str, type[CanonicalRecord]] = {
     model.record_type: model

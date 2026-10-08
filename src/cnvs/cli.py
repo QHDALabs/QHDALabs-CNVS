@@ -8,12 +8,19 @@ from pathlib import Path
 
 from cnvs import __version__
 from cnvs.collection import collect_source, find_registration, retry_collection
-from cnvs.configuration import ConfigurationError, validate_configuration
+from cnvs.configuration import (
+    CountryCoverageCatalog,
+    ConfigurationError,
+    load_country_coverage_catalog,
+    validate_configuration,
+)
 from cnvs.models import (
     CollectionResult,
     Claim,
     ClaimEvidenceLink,
     ClaimExtraction,
+    CountryCoveragePlan,
+    CountryMatrixAssessment,
     DuplicateRelationship,
     Event,
     EventSourceMatch,
@@ -22,6 +29,8 @@ from cnvs.models import (
     EvidenceNote,
     EvidenceReview,
     IndependenceAssignment,
+    JsonValue,
+    NationalInformationMatrix,
     NormalizedDocument,
     ProvenanceLink,
     ProvenanceOriginAssessment,
@@ -287,6 +296,74 @@ def _build_parser() -> argparse.ArgumentParser:
     claim_history.add_argument("candidate_id")
     claim_history.add_argument("--database", help="SQLite database file.")
 
+    matrix_parser = commands.add_parser(
+        "matrix", help="Plan, review and inspect event-specific country coverage."
+    )
+    matrix_commands = matrix_parser.add_subparsers(
+        dest="matrix_command", required=True
+    )
+    matrix_plan = matrix_commands.add_parser(
+        "plan", help="Propose event coverage from the approved country/language catalog."
+    )
+    matrix_plan.add_argument("event_id")
+    matrix_plan.add_argument("--file", required=True, help="Coverage plan JSON file.")
+    matrix_plan.add_argument("--proposed-by", required=True)
+    matrix_plan.add_argument("--rationale", required=True)
+    matrix_plan.add_argument("--proposed-at")
+    matrix_plan.add_argument("--config-dir", help="Configuration directory.")
+    matrix_plan.add_argument("--database", help="SQLite database file.")
+    matrix_review = matrix_commands.add_parser(
+        "review", help="Review a proposed event country coverage plan."
+    )
+    matrix_review.add_argument("plan_id")
+    matrix_review.add_argument(
+        "--decision",
+        required=True,
+        choices=("ACCEPTED", "REJECTED", "UNRESOLVED", "SUPERSEDED"),
+    )
+    matrix_review.add_argument("--reviewer", required=True)
+    matrix_review.add_argument("--rationale", required=True)
+    matrix_review.add_argument("--reviewed-at")
+    matrix_review.add_argument("--database", help="SQLite database file.")
+    matrix_plans = matrix_commands.add_parser(
+        "plans", help="List proposed coverage plans and their review states."
+    )
+    matrix_plans.add_argument("--event-id", required=True)
+    matrix_plans.add_argument("--database", help="SQLite database file.")
+    matrix_assess = matrix_commands.add_parser(
+        "assess", help="Record a country-level frame, attribution and confidence assessment."
+    )
+    matrix_assess.add_argument("plan_id")
+    matrix_assess.add_argument("country_code")
+    matrix_assess.add_argument("--file", required=True, help="Assessment JSON file.")
+    matrix_assess.add_argument("--analyst", required=True)
+    matrix_assess.add_argument("--rationale", required=True)
+    matrix_assess.add_argument("--created-at")
+    matrix_assess.add_argument("--config-dir", help="Configuration directory.")
+    matrix_assess.add_argument("--database", help="SQLite database file.")
+    matrix_review_assessment = matrix_commands.add_parser(
+        "review-assessment", help="Review or supersede a country matrix assessment."
+    )
+    matrix_review_assessment.add_argument("assessment_id")
+    matrix_review_assessment.add_argument(
+        "--decision", required=True, choices=("ACCEPTED", "REJECTED", "UNRESOLVED")
+    )
+    matrix_review_assessment.add_argument("--reviewer", required=True)
+    matrix_review_assessment.add_argument("--rationale", required=True)
+    matrix_review_assessment.add_argument("--reviewed-at")
+    matrix_review_assessment.add_argument("--database", help="SQLite database file.")
+    matrix_assessments = matrix_commands.add_parser(
+        "assessments", help="List country assessments and their review states."
+    )
+    matrix_assessments.add_argument("--plan-id", required=True)
+    matrix_assessments.add_argument("--database", help="SQLite database file.")
+    matrix_show = matrix_commands.add_parser(
+        "show", help="Show coverage counts, gaps and reviewed assessments for an event."
+    )
+    matrix_show.add_argument("event_id")
+    matrix_show.add_argument("--config-dir", help="Configuration directory.")
+    matrix_show.add_argument("--database", help="SQLite database file.")
+
     evidence_parser = commands.add_parser(
         "evidence", help="Record evidence, review verification and inspect claim relations."
     )
@@ -536,6 +613,215 @@ def _build_parser() -> argparse.ArgumentParser:
     provenance_assignment_history.add_argument("assignment_id")
     provenance_assignment_history.add_argument("--database", help="SQLite database file.")
     return parser
+
+
+def _read_json_object(path: str, description: str) -> dict[str, JsonValue]:
+    payload = json.loads(Path(path).expanduser().read_text(encoding="utf-8"))
+    if not isinstance(payload, dict):
+        raise ValueError(f"{description} must be a JSON object.")
+    return payload
+
+
+def _matrix_coverage_payload(
+    path: str, catalog: CountryCoverageCatalog
+) -> tuple[list[dict[str, JsonValue]], list[dict[str, JsonValue]]]:
+    payload = _read_json_object(path, "Coverage plan input")
+    raw_countries = payload.get("countries")
+    raw_outside = payload.get("outside_catalog", [])
+    if not isinstance(raw_countries, list) or not raw_countries:
+        raise ValueError("Coverage plan countries must be a non-empty JSON array.")
+    if not isinstance(raw_outside, list):
+        raise ValueError("Coverage plan outside_catalog must be a JSON array.")
+    catalog_entries = {entry.code: entry for entry in catalog.entries}
+    selected: dict[str, list[str]] = {}
+    for item in raw_countries:
+        if not isinstance(item, dict):
+            raise ValueError("Each selected country must be a JSON object.")
+        code = item.get("code")
+        languages = item.get("languages")
+        if not isinstance(code, str) or code not in catalog_entries:
+            raise ValueError(f"Unknown country code in coverage plan: {code!r}.")
+        if code in selected:
+            raise ValueError(f"Country {code} is selected more than once.")
+        if languages is None:
+            languages = list(catalog_entries[code].languages)
+        if not isinstance(languages, list) or not languages:
+            raise ValueError(f"Country {code} needs a non-empty unique language list.")
+        language_codes = [
+            language for language in languages if isinstance(language, str)
+        ]
+        if (
+            len(language_codes) != len(languages)
+            or len(language_codes) != len(set(language_codes))
+        ):
+            raise ValueError(f"Country {code} needs a non-empty unique language list.")
+        allowed = set(catalog_entries[code].languages)
+        if any(language not in allowed for language in language_codes):
+            raise ValueError(
+                f"Selected languages for {code} must be a subset of its approved languages."
+            )
+        selected[code] = language_codes
+    countries: list[dict[str, JsonValue]] = []
+    for entry in catalog.entries:
+        if entry.code not in selected:
+            continue
+        languages_payload: list[JsonValue] = []
+        country_payload: dict[str, JsonValue] = {
+            "code": entry.code,
+            "name": entry.name,
+        }
+        for language in selected[entry.code]:
+            languages_payload.append(language)
+        country_payload["languages"] = languages_payload
+        countries.append(country_payload)
+    outside: list[dict[str, JsonValue]] = []
+    outside_names: set[str] = set()
+    for item in raw_outside:
+        if not isinstance(item, dict):
+            raise ValueError("Each out-of-catalog country must be a JSON object.")
+        country, reason = item.get("country"), item.get("reason")
+        if not isinstance(country, str) or not isinstance(reason, str):
+            raise ValueError(
+                "Each out-of-catalog entry needs non-empty country and reason strings."
+            )
+        country_name, country_reason = country.strip(), reason.strip()
+        if not country_name or not country_reason:
+            raise ValueError(
+                "Each out-of-catalog entry needs non-empty country and reason strings."
+            )
+        if country_name in catalog_entries:
+            raise ValueError(
+                f"{country_name} is in the approved catalog; select it under countries."
+            )
+        if country_name in outside_names:
+            raise ValueError(f"Out-of-catalog country {country_name} is duplicated.")
+        outside_names.add(country_name)
+        outside.append({"country": country_name, "reason": country_reason})
+    return countries, outside
+
+
+def _matrix_assessment_payload(path: str) -> dict[str, JsonValue]:
+    payload = _read_json_object(path, "Matrix assessment input")
+    required_text = (
+        "dominant_frame",
+        "attribution_summary",
+        "occurrence_confidence",
+        "method_confidence",
+        "attribution_confidence",
+        "omissions",
+        "contradictions",
+    )
+    for key in required_text:
+        value = payload.get(key)
+        if not isinstance(value, str) or not value.strip():
+            raise ValueError(f"Matrix assessment field {key!r} must be a non-empty string.")
+    for key in (
+        "supporting_source_ids",
+        "supporting_claim_ids",
+        "supporting_evidence_ids",
+    ):
+        values = payload.get(key, [])
+        if not isinstance(values, list) or any(
+            not isinstance(value, str) or not value.strip() for value in values
+        ):
+            raise ValueError(f"Matrix assessment field {key!r} must be a string array.")
+        payload[key] = [
+            value for value in values if isinstance(value, str)
+        ]
+    return payload
+
+
+def _matrix_string_list(payload: dict[str, JsonValue], key: str) -> list[str]:
+    values = payload.get(key, [])
+    if not isinstance(values, list) or any(
+        not isinstance(value, str) for value in values
+    ):
+        raise ValueError(f"Matrix assessment field {key!r} must be a string array.")
+    return [value for value in values if isinstance(value, str)]
+
+
+def _print_country_coverage_plan(plan: CountryCoveragePlan) -> None:
+    print(
+        f"{plan.plan_id} event={plan.event_id} revision={plan.revision} "
+        f"status={plan.status} config_sha256={plan.config_sha256}"
+    )
+    print(f"  countries={json.dumps(plan.countries, ensure_ascii=False)}")
+    print(f"  outside_catalog={json.dumps(plan.outside_catalog, ensure_ascii=False)}")
+    print(f"  proposed_by={plan.proposed_by} proposed_at={plan.proposed_at}")
+    print(f"  rationale={plan.rationale}")
+    if plan.reviewed_by is not None:
+        print(
+            f"  reviewed_by={plan.reviewed_by} reviewed_at={plan.reviewed_at} "
+            f"review_rationale={plan.review_rationale}"
+        )
+
+
+def _print_matrix_assessment(assessment: CountryMatrixAssessment) -> None:
+    print(
+        f"{assessment.assessment_id} event={assessment.event_id} "
+        f"country={assessment.country_code} status={assessment.status}"
+    )
+    print(
+        f"  frame={assessment.dominant_frame} "
+        f"attribution={assessment.attribution_summary}"
+    )
+    print(
+        f"  confidence=occurrence:{assessment.occurrence_confidence},"
+        f"method:{assessment.method_confidence},"
+        f"attribution:{assessment.attribution_confidence}"
+    )
+    print(
+        f"  omissions={assessment.omissions} contradictions={assessment.contradictions}"
+    )
+    print(
+        "  supporting_sources="
+        + ",".join(assessment.supporting_source_ids)
+        + " claims="
+        + ",".join(assessment.supporting_claim_ids)
+        + " evidence="
+        + ",".join(assessment.supporting_evidence_ids)
+    )
+    print(
+        f"  analyst={assessment.analyst} created_at={assessment.created_at} "
+        f"rationale={assessment.rationale}"
+    )
+    if assessment.reviewed_by is not None:
+        print(
+            f"  reviewed_by={assessment.reviewed_by} reviewed_at={assessment.reviewed_at} "
+            f"review_rationale={assessment.review_rationale}"
+        )
+
+
+def _print_national_information_matrix(matrix: NationalInformationMatrix) -> None:
+    _print_country_coverage_plan(matrix.plan)
+    if not matrix.config_matches:
+        print(
+            "WARNING: country/language configuration differs from the accepted "
+            "plan snapshot; re-propose and review coverage."
+        )
+    if not matrix.cells:
+        print("No country cells: the latest coverage plan is not accepted.")
+        return
+    for cell in matrix.cells:
+        print(
+            f"{cell.country_code} {cell.country_name} languages={','.join(cell.languages)} "
+            f"documents={cell.reporting_documents} sources={cell.reporting_sources} "
+            f"institutional_sources={cell.institutional_sources} "
+            f"primary_observation_sources={cell.primary_observation_sources} "
+            f"primary_evidence={cell.primary_evidence} claims={cell.claims} "
+            f"supports={cell.supporting_relations} "
+            f"contradictions={cell.contradicting_relations}"
+        )
+        print(
+            f"  uncovered_languages={','.join(cell.uncovered_languages) or 'none'} "
+            f"independence_groups={','.join(cell.accepted_independence_groups) or 'none'}"
+        )
+        for gap in cell.coverage_gaps:
+            print(f"  coverage_gap={gap}")
+        if cell.assessment is None:
+            print("  assessment=none")
+        else:
+            _print_matrix_assessment(cell.assessment)
 
 
 def _print_collection_result(result: CollectionResult) -> None:
@@ -860,6 +1146,122 @@ def main(argv: Sequence[str] | None = None) -> int:
                 f"{summary.event_type_count} event types, "
                 f"{summary.source_type_count} source types."
             )
+            return 0
+
+        if args.command == "matrix":
+            config_dir = getattr(args, "config_dir", None)
+            settings = Settings.from_environment(
+                config_dir_override=config_dir,
+                database_path_override=args.database,
+            )
+            database = Database(settings.database_path)
+            command = args.matrix_command
+            if command == "plan":
+                catalog = load_country_coverage_catalog(settings.config_dir)
+                countries, outside_catalog = _matrix_coverage_payload(
+                    args.file, catalog
+                )
+                proposed_at = args.proposed_at or (
+                    datetime.now(timezone.utc)
+                    .isoformat(timespec="seconds")
+                    .replace("+00:00", "Z")
+                )
+                plan = database.create_country_coverage_plan(
+                    event_id=args.event_id,
+                    config_sha256=catalog.config_sha256,
+                    countries=countries,
+                    outside_catalog=outside_catalog,
+                    proposed_by=args.proposed_by,
+                    proposed_at=proposed_at,
+                    rationale=args.rationale,
+                )
+                _print_country_coverage_plan(plan)
+                return 0
+            if command == "review":
+                reviewed_at = args.reviewed_at or (
+                    datetime.now(timezone.utc)
+                    .isoformat(timespec="seconds")
+                    .replace("+00:00", "Z")
+                )
+                plan = database.review_country_coverage_plan(
+                    plan_id=args.plan_id,
+                    decision=args.decision,
+                    reviewed_by=args.reviewer,
+                    reviewed_at=reviewed_at,
+                    rationale=args.rationale,
+                )
+                _print_country_coverage_plan(plan)
+                return 0
+            if command == "plans":
+                plans = database.country_coverage_plans(event_id=args.event_id)
+                if not plans:
+                    print("No country coverage plans found.")
+                for plan in plans:
+                    _print_country_coverage_plan(plan)
+                return 0
+            if command == "assess":
+                catalog = load_country_coverage_catalog(settings.config_dir)
+                payload = _matrix_assessment_payload(args.file)
+                created_at = args.created_at or (
+                    datetime.now(timezone.utc)
+                    .isoformat(timespec="seconds")
+                    .replace("+00:00", "Z")
+                )
+                assessment = database.record_country_matrix_assessment(
+                    plan_id=args.plan_id,
+                    country_code=args.country_code,
+                    config_sha256=catalog.config_sha256,
+                    dominant_frame=str(payload["dominant_frame"]),
+                    attribution_summary=str(payload["attribution_summary"]),
+                    occurrence_confidence=str(payload["occurrence_confidence"]),
+                    method_confidence=str(payload["method_confidence"]),
+                    attribution_confidence=str(payload["attribution_confidence"]),
+                    omissions=str(payload["omissions"]),
+                    contradictions=str(payload["contradictions"]),
+                    supporting_source_ids=_matrix_string_list(
+                        payload, "supporting_source_ids"
+                    ),
+                    supporting_claim_ids=_matrix_string_list(
+                        payload, "supporting_claim_ids"
+                    ),
+                    supporting_evidence_ids=_matrix_string_list(
+                        payload, "supporting_evidence_ids"
+                    ),
+                    analyst=args.analyst,
+                    created_at=created_at,
+                    rationale=args.rationale,
+                )
+                _print_matrix_assessment(assessment)
+                return 0
+            if command == "review-assessment":
+                reviewed_at = args.reviewed_at or (
+                    datetime.now(timezone.utc)
+                    .isoformat(timespec="seconds")
+                    .replace("+00:00", "Z")
+                )
+                assessment = database.review_country_matrix_assessment(
+                    assessment_id=args.assessment_id,
+                    decision=args.decision,
+                    reviewed_by=args.reviewer,
+                    reviewed_at=reviewed_at,
+                    rationale=args.rationale,
+                )
+                _print_matrix_assessment(assessment)
+                return 0
+            if command == "assessments":
+                assessments = database.country_matrix_assessments(
+                    plan_id=args.plan_id
+                )
+                if not assessments:
+                    print("No country matrix assessments found.")
+                for assessment in assessments:
+                    _print_matrix_assessment(assessment)
+                return 0
+            catalog = load_country_coverage_catalog(settings.config_dir)
+            matrix = database.national_information_matrix(
+                event_id=args.event_id, config_sha256=catalog.config_sha256
+            )
+            _print_national_information_matrix(matrix)
             return 0
 
         if args.command == "event":

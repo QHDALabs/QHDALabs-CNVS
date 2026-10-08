@@ -294,3 +294,76 @@ source volume or independence count is inferred from these records.
 `evidence gaps` lists open or reviewed gaps; `evidence gap` records missing,
 insufficient or conflicting evidence. These operations do not perform
 automated contradiction detection or verify the truth of an observation.
+
+## National information matrix
+
+Stage 10 records an event-specific country/language coverage plan against the
+approved country and language catalogs. A plan stores the selected country
+codes, their selected subset of catalog languages, any explicitly justified
+out-of-catalog countries, the analyst rationale and a SHA-256 snapshot of the
+country/language configuration. Proposals and review decisions are append-only;
+only an accepted plan is used for matrix cells. Accepting a replacement plan
+supersedes the prior accepted plan while retaining its review history. A
+changed catalog digest is shown as a warning and blocks new assessments until
+coverage is proposed and reviewed against the current catalog.
+
+`cnvs matrix plan EVENT-ID --file coverage.json --proposed-by analyst
+--rationale "..."` expects a JSON object with a non-empty `countries` array.
+Each entry has a catalog `code` and an optional non-empty `languages` array;
+omitting languages selects all languages configured for that country. For
+example:
+
+```json
+{
+  "countries": [
+    {"code": "PL", "languages": ["pl"]},
+    {"code": "UA", "languages": ["uk", "ru"]}
+  ],
+  "outside_catalog": [
+    {"country": "Exampleland", "reason": "Relevant transit location"}
+  ]
+}
+```
+
+The CLI derives country names and validates codes/languages from the
+configuration rather than trusting caller-supplied labels. Out-of-catalog
+entries require a reason and cannot duplicate a catalog country. Review with
+`cnvs matrix review PLAN-ID --decision ACCEPTED --reviewer reviewer --rationale
+"..."`; inspect proposal history with `cnvs matrix plans --event-id EVENT-ID`.
+
+Matrix cells use only documents whose latest event/source-link review is
+`LINKED`. Reporting document and source counts come from immutable collection
+metadata snapshots, not mutable current registry data. A source whose snapshots
+conflict on country or source class remains visible through its linked
+documents but is excluded from source, claim and evidence counts; the affected
+cell reports this limitation. Language coverage counts only documents whose
+language is recorded without a review-required conflict. Institutional source
+counts use the recorded `INSTITUTIONAL_STATEMENT` class; sources recorded as
+`PRIMARY_OBSERVATION` are counted separately. These source classes are
+independent of Evidence `directness`. Claims are canonical event claims
+attached to the linked country sources; support and contradiction totals
+include only currently `LINKED` claim/evidence relationships.
+
+The primary-evidence count is limited to evidence with `PRIMARY` directness
+whose effective verification status is `VERIFIED`. It is not a count of
+independent confirmations. Accepted source, document and evidence
+independence-group assignments are shown as labels, never summed into a truth
+score. Coverage gaps call out missing confirmed reporting/languages,
+institutional statements and verified primary-directness evidence.
+
+Analysts can add a country assessment with
+`cnvs matrix assess PLAN-ID COUNTRY-CODE --file assessment.json --analyst
+analyst --rationale "..."`. The JSON records a dominant frame, attribution
+summary, separate `occurrence_confidence`, `method_confidence` and
+`attribution_confidence` values (`LOW`, `MEDIUM`, `HIGH` or `UNKNOWN`),
+omissions, contradictions and optional source/claim/evidence ID arrays.
+Confidence is explicitly analyst judgment and is never derived from report
+volume. References must belong to the event and selected country. A reviewer
+must accept, reject or mark the assessment unresolved with
+`cnvs matrix review-assessment ASSESSMENT-ID --decision ACCEPTED --reviewer
+reviewer --rationale "..."`. The matrix displays the current accepted
+assessment in preference to pending proposals; `cnvs matrix assessments
+--plan-id PLAN-ID` exposes every proposal and its current review state.
+`cnvs matrix show EVENT-ID` prints the selected matrix and makes coverage gaps,
+configuration drift and assessment states visible. Country comparisons are
+coverage summaries, not claims that any country is inherently correct.

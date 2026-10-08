@@ -316,7 +316,7 @@ passes.
 
 Stage 10 — Build the national information matrix
 ------------------------------------------------
-Status: TODO
+Status: DONE
 Tasks:
 - Select country coverage dynamically for each event from a reviewed country
   and language configuration.
@@ -327,6 +327,31 @@ Done when:
 - The MVP supports a reviewed initial set of 10–15 countries.
 - Country comparisons distinguish reporting volume from independent evidence
   and do not treat a country as inherently correct.
+Outcome: Added migration 008 and an event-specific, append-only coverage-plan
+workflow selecting countries and language subsets from the approved
+12-country/11-language catalog. Configuration digests bind plans to the
+reviewed catalog; proposals, reviews and superseding plans retain history.
+The matrix aggregates only currently LINKED event documents using immutable
+collection metadata snapshots, and reports document/source volume separately
+from institutional statements, PRIMARY_OBSERVATION-class sources, canonical
+claims, reviewed supporting and contradicting relations, VERIFIED
+PRIMARY-directness evidence and accepted independence-group labels. Conflicting
+source metadata and languages requiring
+review are excluded from affected counts and surfaced as coverage gaps.
+Country frame, attribution, omissions, contradictions and occurrence/method/
+attribution confidence are explicit analyst records with rationale, scoped
+references and append-only review; confidence is not inferred from volume.
+The CLI exposes plan, review, assessment, history/list and matrix-show
+workflows. No country is treated as inherently correct and no independence
+count is presented as a truth score.
+Validation: All 94 tests pass on Python 3.14.5, including seven Stage 10
+matrix tests and fresh-database application of all eight migrations.
+`python -m cnvs config validate` passes for 12 countries and 11 languages;
+`cnvs matrix --help` exposes all seven matrix operations, and
+`git diff --check` passes. Pylance reports no diagnostics in changed
+configuration, model, CLI or matrix-test files and no Stage 10 errors in
+storage.py; existing diagnostics in earlier storage code remain outside this
+stage's changes.
 
 Stage 11 — Produce analyst-reviewed reports
 -------------------------------------------
@@ -392,7 +417,7 @@ MVP EXIT CHECKLIST
 [ ] Basic source graph and evidence independence groups are available.
 [x] Evidence, contradictions and unresolved gaps are represented.
 [ ] Event timeline is available with distinct event/publication/collection times.
-[ ] National information matrix supports the selected 10–15 countries.
+[x] National information matrix supports the selected 10–15 countries.
 [ ] Markdown and HTML reports are generated from versioned records.
 [ ] High-impact reports require and record human review.
 [ ] Tests, security safeguards, documented setup and CI pass.
