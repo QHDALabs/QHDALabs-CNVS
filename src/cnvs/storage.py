@@ -5,7 +5,7 @@ import sqlite3
 import threading
 import uuid
 from contextlib import contextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from importlib.resources import files
 from pathlib import Path
@@ -15,9 +15,13 @@ from cnvs.models import (
     Assessment,
     CanonicalRecord,
     Claim,
+    ClaimEvidenceLink,
     ClaimExtraction,
     CollectionResult,
     Evidence,
+    EvidenceGap,
+    EvidenceNote,
+    EvidenceReview,
     DuplicateRelationship,
     Event,
     EventSourceMatch,
@@ -1840,6 +1844,590 @@ class Database:
                 (document_id,),
             ).fetchall()
         return [self._translation_from_row(row) for row in rows]
+
+    def record_evidence(self, evidence: Evidence) -> int:
+        if not isinstance(evidence, Evidence):
+            raise StorageError("Only a validated Evidence record can be recorded.")
+        return self._save(evidence, create_only=True)
+
+    def evidence_records(
+        self, *, event_id: str | None = None, source_id: str | None = None
+    ) -> list[Evidence]:
+        with self._connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT payload_json FROM canonical_records
+                WHERE record_type = 'evidence'
+                  AND (? IS NULL OR json_extract(payload_json, '$.event_id') = ?)
+                  AND (? IS NULL OR json_extract(payload_json, '$.source_id') = ?)
+                ORDER BY record_id
+                """,
+                (event_id, event_id, source_id, source_id),
+            ).fetchall()
+        return [
+            parse_record("evidence", json.loads(row["payload_json"]))
+            for row in rows
+        ]
+
+    @staticmethod
+    def _evidence_note_from_row(row: sqlite3.Row) -> EvidenceNote:
+        return EvidenceNote(
+            note_id=row["note_id"],
+            evidence_id=row["evidence_id"],
+            analyst=row["analyst"],
+            noted_at=row["noted_at"],
+            note=row["note"],
+            rationale=row["rationale"],
+        )
+
+    def add_evidence_note(
+        self,
+        *,
+        evidence_id: str,
+        analyst: str,
+        noted_at: str,
+        note: str,
+        rationale: str,
+    ) -> EvidenceNote:
+        if not analyst.strip() or not note.strip() or not rationale.strip():
+            raise StorageError("An evidence note needs an analyst, note and rationale.")
+        _validate_timestamp(noted_at, "noted_at")
+        note_id = uuid.uuid4().hex
+        with self._lock, self._write_transaction() as connection:
+            self._require_record(connection, "evidence", evidence_id)
+            connection.execute(
+                """
+                INSERT INTO evidence_notes (
+                    note_id, evidence_id, analyst, noted_at, note, rationale
+                ) VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    note_id,
+                    evidence_id,
+                    analyst.strip(),
+                    noted_at,
+                    note.strip(),
+                    rationale.strip(),
+                ),
+            )
+            row = connection.execute(
+                "SELECT * FROM evidence_notes WHERE note_id = ?", (note_id,)
+            ).fetchone()
+        return self._evidence_note_from_row(row)
+
+    def evidence_notes(self, evidence_id: str) -> list[EvidenceNote]:
+        with self._connect() as connection:
+            self._require_record(connection, "evidence", evidence_id)
+            rows = connection.execute(
+                "SELECT * FROM evidence_notes WHERE evidence_id = ? ORDER BY rowid",
+                (evidence_id,),
+            ).fetchall()
+        return [self._evidence_note_from_row(row) for row in rows]
+
+    @staticmethod
+    def _evidence_review_from_row(row: sqlite3.Row) -> EvidenceReview:
+        return EvidenceReview(
+            review_id=row["review_id"],
+            evidence_id=row["evidence_id"],
+            verification_status=row["verification_status"],
+            reviewed_by=row["reviewed_by"],
+            reviewed_at=row["reviewed_at"],
+            rationale=row["rationale"],
+            analyst_note=row["analyst_note"],
+        )
+
+    def review_evidence(
+        self,
+        *,
+        evidence_id: str,
+        verification_status: str,
+        reviewed_by: str,
+        reviewed_at: str,
+        rationale: str,
+        analyst_note: str | None = None,
+    ) -> EvidenceReview:
+        if verification_status not in {"IN_REVIEW", "VERIFIED", "REJECTED"}:
+            raise StorageError(
+                "Evidence review status must be IN_REVIEW, VERIFIED or REJECTED."
+            )
+        if not reviewed_by.strip() or not rationale.strip():
+            raise StorageError("Evidence review needs a reviewer and rationale.")
+        if analyst_note is not None and not analyst_note.strip():
+            raise StorageError("An evidence analyst note must not be empty.")
+        _validate_timestamp(reviewed_at, "reviewed_at")
+        review_id = uuid.uuid4().hex
+        with self._lock, self._write_transaction() as connection:
+            self._require_record(connection, "evidence", evidence_id)
+            connection.execute(
+                """
+                INSERT INTO evidence_verification_reviews (
+                    review_id, evidence_id, verification_status, reviewed_by,
+                    reviewed_at, rationale, analyst_note
+                ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    review_id,
+                    evidence_id,
+                    verification_status,
+                    reviewed_by.strip(),
+                    reviewed_at,
+                    rationale.strip(),
+                    analyst_note.strip() if analyst_note is not None else None,
+                ),
+            )
+            row = connection.execute(
+                "SELECT * FROM evidence_verification_reviews WHERE review_id = ?",
+                (review_id,),
+            ).fetchone()
+        return self._evidence_review_from_row(row)
+
+    def evidence_review_history(self, evidence_id: str) -> list[EvidenceReview]:
+        with self._connect() as connection:
+            self._require_record(connection, "evidence", evidence_id)
+            rows = connection.execute(
+                """
+                SELECT * FROM evidence_verification_reviews
+                WHERE evidence_id = ? ORDER BY rowid
+                """,
+                (evidence_id,),
+            ).fetchall()
+        return [self._evidence_review_from_row(row) for row in rows]
+
+    def evidence_verification_status(self, evidence_id: str) -> str:
+        evidence = self.get("evidence", evidence_id)
+        assert isinstance(evidence, Evidence)
+        history = self.evidence_review_history(evidence_id)
+        return history[-1].verification_status if history else evidence.verification_status
+
+    @staticmethod
+    def _claim_evidence_link_select() -> str:
+        return """
+            SELECT link.*,
+                review.decision AS review_status,
+                review.reviewed_by,
+                review.reviewed_at,
+                review.rationale AS review_rationale
+            FROM claim_evidence_links AS link
+            LEFT JOIN claim_evidence_link_reviews AS review
+                ON review.review_id = (
+                    SELECT latest.review_id
+                    FROM claim_evidence_link_reviews AS latest
+                    WHERE latest.link_id = link.link_id
+                    ORDER BY latest.rowid DESC
+                    LIMIT 1
+                )
+        """
+
+    @staticmethod
+    def _claim_evidence_link_from_row(row: sqlite3.Row) -> ClaimEvidenceLink:
+        return ClaimEvidenceLink(
+            link_id=row["link_id"],
+            event_id=row["event_id"],
+            claim_id=row["claim_id"],
+            evidence_id=row["evidence_id"],
+            relationship=row["relationship"],
+            proposed_by=row["proposed_by"],
+            proposed_at=row["proposed_at"],
+            rationale=row["rationale"],
+            review_status=row["review_status"] or "PENDING",
+            reviewed_by=row["reviewed_by"],
+            reviewed_at=row["reviewed_at"],
+            review_rationale=row["review_rationale"],
+        )
+
+    def propose_claim_evidence_link(
+        self,
+        *,
+        claim_id: str,
+        evidence_id: str,
+        relationship: str,
+        proposed_by: str,
+        proposed_at: str,
+        rationale: str,
+    ) -> ClaimEvidenceLink:
+        if relationship not in {"SUPPORTS", "CONTRADICTS", "NOT_DIRECTLY_RELEVANT"}:
+            raise StorageError("Unsupported claim/evidence relationship.")
+        if not proposed_by.strip() or not rationale.strip():
+            raise StorageError("A claim/evidence link needs an analyst and rationale.")
+        _validate_timestamp(proposed_at, "proposed_at")
+        link_id = uuid.uuid4().hex
+        with self._lock, self._write_transaction() as connection:
+            claim = self._require_record(connection, "claim", claim_id)
+            evidence = self._require_record(connection, "evidence", evidence_id)
+            if claim["event_id"] != evidence["event_id"]:
+                raise StorageError(
+                    "Claim/evidence links must refer to records from the same event."
+                )
+            active = connection.execute(
+                """
+                SELECT link.link_id
+                FROM claim_evidence_links AS link
+                LEFT JOIN claim_evidence_link_reviews AS review
+                    ON review.review_id = (
+                        SELECT latest.review_id
+                        FROM claim_evidence_link_reviews AS latest
+                        WHERE latest.link_id = link.link_id
+                        ORDER BY latest.rowid DESC LIMIT 1
+                    )
+                WHERE link.claim_id = ? AND link.evidence_id = ?
+                  AND COALESCE(review.decision, 'PENDING')
+                      IN ('PENDING', 'LINKED')
+                LIMIT 1
+                """,
+                (claim_id, evidence_id),
+            ).fetchone()
+            if active is not None:
+                raise StorageError(
+                    "Evidence already has a pending or linked relationship to this claim; "
+                    "resolve it before proposing another."
+                )
+            connection.execute(
+                """
+                INSERT INTO claim_evidence_links (
+                    link_id, event_id, claim_id, evidence_id, relationship,
+                    proposed_by, proposed_at, rationale
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    link_id,
+                    claim["event_id"],
+                    claim_id,
+                    evidence_id,
+                    relationship,
+                    proposed_by.strip(),
+                    proposed_at,
+                    rationale.strip(),
+                ),
+            )
+        return self.claim_evidence_links(link_id=link_id)[0]
+
+    def claim_evidence_links(
+        self,
+        *,
+        event_id: str | None = None,
+        claim_id: str | None = None,
+        evidence_id: str | None = None,
+        review_status: str | None = None,
+        link_id: str | None = None,
+    ) -> list[ClaimEvidenceLink]:
+        statuses = {None, "PENDING", "LINKED", "REJECTED", "UNRESOLVED"}
+        if review_status not in statuses:
+            raise ValueError("Unsupported claim/evidence link review status.")
+        query = self._claim_evidence_link_select() + """
+            WHERE (? IS NULL OR link.event_id = ?)
+              AND (? IS NULL OR link.claim_id = ?)
+              AND (? IS NULL OR link.evidence_id = ?)
+              AND (? IS NULL OR link.link_id = ?)
+              AND (? IS NULL OR COALESCE(review.decision, 'PENDING') = ?)
+            ORDER BY link.proposed_at, link.link_id
+        """
+        parameters = (
+            event_id, event_id, claim_id, claim_id, evidence_id, evidence_id,
+            link_id, link_id, review_status, review_status,
+        )
+        with self._connect() as connection:
+            rows = connection.execute(query, parameters).fetchall()
+        return [self._claim_evidence_link_from_row(row) for row in rows]
+
+    def review_claim_evidence_link(
+        self,
+        *,
+        link_id: str,
+        decision: str,
+        reviewed_by: str,
+        reviewed_at: str,
+        rationale: str,
+    ) -> ClaimEvidenceLink:
+        if decision not in {"LINKED", "REJECTED", "UNRESOLVED"}:
+            raise StorageError("Unsupported claim/evidence link review decision.")
+        if not reviewed_by.strip() or not rationale.strip():
+            raise StorageError("A claim/evidence link review needs reviewer and rationale.")
+        _validate_timestamp(reviewed_at, "reviewed_at")
+        review_id = uuid.uuid4().hex
+        with self._lock, self._write_transaction() as connection:
+            link = connection.execute(
+                "SELECT * FROM claim_evidence_links WHERE link_id = ?", (link_id,)
+            ).fetchone()
+            if link is None:
+                raise StorageError(f"Claim/evidence link {link_id} was not found.")
+            if decision == "LINKED":
+                active = connection.execute(
+                    """
+                    SELECT link.link_id
+                    FROM claim_evidence_links AS link
+                    JOIN claim_evidence_link_reviews AS review
+                      ON review.review_id = (
+                          SELECT latest.review_id
+                          FROM claim_evidence_link_reviews AS latest
+                          WHERE latest.link_id = link.link_id
+                          ORDER BY latest.rowid DESC LIMIT 1
+                      )
+                    WHERE link.claim_id = ? AND link.evidence_id = ?
+                      AND link.link_id != ? AND review.decision = 'LINKED'
+                    LIMIT 1
+                    """,
+                    (link["claim_id"], link["evidence_id"], link_id),
+                ).fetchone()
+                if active is not None:
+                    raise StorageError(
+                        "Evidence already has a linked relationship to this claim."
+                    )
+            connection.execute(
+                """
+                INSERT INTO claim_evidence_link_reviews (
+                    review_id, link_id, decision, reviewed_by, reviewed_at, rationale
+                ) VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    review_id,
+                    link_id,
+                    decision,
+                    reviewed_by.strip(),
+                    reviewed_at,
+                    rationale.strip(),
+                ),
+            )
+        return self.claim_evidence_links(link_id=link_id)[0]
+
+    def claim_evidence_link_history(
+        self, link_id: str
+    ) -> list[ClaimEvidenceLink]:
+        with self._connect() as connection:
+            link = connection.execute(
+                "SELECT * FROM claim_evidence_links WHERE link_id = ?", (link_id,)
+            ).fetchone()
+            if link is None:
+                raise StorageError(f"Claim/evidence link {link_id} was not found.")
+            reviews = connection.execute(
+                "SELECT * FROM claim_evidence_link_reviews WHERE link_id = ? ORDER BY rowid",
+                (link_id,),
+            ).fetchall()
+        initial = self._claim_evidence_link_from_row(
+            {**dict(link), "review_status": "PENDING", "reviewed_by": None,
+             "reviewed_at": None, "review_rationale": None}
+        )
+        return [
+            initial,
+            *(
+                replace(
+                    initial,
+                    review_status=review["decision"],
+                    reviewed_by=review["reviewed_by"],
+                    reviewed_at=review["reviewed_at"],
+                    review_rationale=review["rationale"],
+                )
+                for review in reviews
+            ),
+        ]
+
+    @staticmethod
+    def _evidence_gap_select() -> str:
+        return """
+            SELECT gap.*,
+                review.decision AS review_decision,
+                review.reviewed_by,
+                review.reviewed_at,
+                review.rationale AS review_rationale,
+                CASE
+                    WHEN review.decision = 'REOPENED' THEN 'OPEN'
+                    ELSE COALESCE(review.decision, 'OPEN')
+                END AS status
+            FROM evidence_gaps AS gap
+            LEFT JOIN evidence_gap_reviews AS review
+                ON review.review_id = (
+                    SELECT latest.review_id
+                    FROM evidence_gap_reviews AS latest
+                    WHERE latest.gap_id = gap.gap_id
+                    ORDER BY latest.rowid DESC
+                    LIMIT 1
+                )
+        """
+
+    @staticmethod
+    def _evidence_gap_from_row(row: sqlite3.Row) -> EvidenceGap:
+        return EvidenceGap(
+            gap_id=row["gap_id"],
+            event_id=row["event_id"],
+            claim_id=row["claim_id"],
+            gap_type=row["gap_type"],
+            description=row["description"],
+            created_by=row["created_by"],
+            created_at=row["created_at"],
+            rationale=row["rationale"],
+            supporting_link_id=row["supporting_link_id"],
+            contradicting_link_id=row["contradicting_link_id"],
+            status=row["status"],
+            reviewed_by=row["reviewed_by"],
+            reviewed_at=row["reviewed_at"],
+            review_rationale=row["review_rationale"],
+        )
+
+    def record_evidence_gap(
+        self,
+        *,
+        event_id: str,
+        gap_type: str,
+        description: str,
+        created_by: str,
+        created_at: str,
+        rationale: str,
+        claim_id: str | None = None,
+        supporting_link_id: str | None = None,
+        contradicting_link_id: str | None = None,
+    ) -> EvidenceGap:
+        if gap_type not in {"MISSING", "INSUFFICIENT", "CONFLICTING"}:
+            raise StorageError("Evidence gap type must be MISSING, INSUFFICIENT or CONFLICTING.")
+        if not description.strip() or not created_by.strip() or not rationale.strip():
+            raise StorageError("An evidence gap needs a description, analyst and rationale.")
+        _validate_timestamp(created_at, "created_at")
+        if gap_type == "CONFLICTING" and (
+            claim_id is None or supporting_link_id is None or contradicting_link_id is None
+        ):
+            raise StorageError(
+                "A conflicting-evidence gap needs a claim and confirmed support/contradiction links."
+            )
+        if gap_type != "CONFLICTING" and (
+            supporting_link_id is not None or contradicting_link_id is not None
+        ):
+            raise StorageError("Only a conflicting-evidence gap accepts relation links.")
+        gap_id = uuid.uuid4().hex
+        with self._lock, self._write_transaction() as connection:
+            self._require_record(connection, "event", event_id)
+            if claim_id is not None:
+                claim = self._require_record(connection, "claim", claim_id)
+                if claim["event_id"] != event_id:
+                    raise StorageError("Evidence gaps and claims must belong to the same event.")
+            if gap_type == "CONFLICTING":
+                links = []
+                for link_id, expected in (
+                    (supporting_link_id, "SUPPORTS"),
+                    (contradicting_link_id, "CONTRADICTS"),
+                ):
+                    row = connection.execute(
+                        self._claim_evidence_link_select()
+                        + " WHERE link.link_id = ?",
+                        (link_id,),
+                    ).fetchone()
+                    if (
+                        row is None
+                        or row["event_id"] != event_id
+                        or row["claim_id"] != claim_id
+                        or row["relationship"] != expected
+                        or row["review_status"] != "LINKED"
+                    ):
+                        raise StorageError(
+                            "A conflicting-evidence gap requires confirmed SUPPORTS "
+                            "and CONTRADICTS links for the same claim."
+                        )
+                    links.append(row["link_id"])
+                if links[0] == links[1]:
+                    raise StorageError("Conflict support and contradiction must be distinct links.")
+            connection.execute(
+                """
+                INSERT INTO evidence_gaps (
+                    gap_id, event_id, claim_id, gap_type, description,
+                    created_by, created_at, rationale, supporting_link_id,
+                    contradicting_link_id
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    gap_id, event_id, claim_id, gap_type, description.strip(),
+                    created_by.strip(), created_at, rationale.strip(),
+                    supporting_link_id, contradicting_link_id,
+                ),
+            )
+        return self.evidence_gaps(gap_id=gap_id)[0]
+
+    def evidence_gaps(
+        self,
+        *,
+        event_id: str | None = None,
+        claim_id: str | None = None,
+        gap_type: str | None = None,
+        status: str | None = None,
+        gap_id: str | None = None,
+    ) -> list[EvidenceGap]:
+        if gap_type not in {None, "MISSING", "INSUFFICIENT", "CONFLICTING"}:
+            raise ValueError("Unsupported evidence gap type.")
+        if status not in {None, "OPEN", "RESOLVED", "DISMISSED"}:
+            raise ValueError("Unsupported evidence gap status.")
+        with self._connect() as connection:
+            rows = connection.execute(
+                self._evidence_gap_select()
+                + """
+                    WHERE (? IS NULL OR gap.event_id = ?)
+                      AND (? IS NULL OR gap.claim_id = ?)
+                      AND (? IS NULL OR gap.gap_type = ?)
+                      AND (? IS NULL OR status = ?)
+                      AND (? IS NULL OR gap.gap_id = ?)
+                    ORDER BY gap.created_at, gap.gap_id
+                """,
+                (
+                    event_id, event_id, claim_id, claim_id, gap_type, gap_type,
+                    status, status, gap_id, gap_id,
+                ),
+            ).fetchall()
+        return [self._evidence_gap_from_row(row) for row in rows]
+
+    def review_evidence_gap(
+        self,
+        *,
+        gap_id: str,
+        decision: str,
+        reviewed_by: str,
+        reviewed_at: str,
+        rationale: str,
+    ) -> EvidenceGap:
+        if decision not in {"RESOLVED", "DISMISSED", "REOPENED"}:
+            raise StorageError("Evidence gap decision must be RESOLVED, DISMISSED or REOPENED.")
+        if not reviewed_by.strip() or not rationale.strip():
+            raise StorageError("An evidence gap review needs a reviewer and rationale.")
+        _validate_timestamp(reviewed_at, "reviewed_at")
+        review_id = uuid.uuid4().hex
+        with self._lock, self._write_transaction() as connection:
+            exists = connection.execute(
+                "SELECT 1 FROM evidence_gaps WHERE gap_id = ?", (gap_id,)
+            ).fetchone()
+            if exists is None:
+                raise StorageError(f"Evidence gap {gap_id} was not found.")
+            connection.execute(
+                """
+                INSERT INTO evidence_gap_reviews (
+                    review_id, gap_id, decision, reviewed_by, reviewed_at, rationale
+                ) VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                (review_id, gap_id, decision, reviewed_by.strip(), reviewed_at, rationale.strip()),
+            )
+        return self.evidence_gaps(gap_id=gap_id)[0]
+
+    def evidence_gap_history(self, gap_id: str) -> list[EvidenceGap]:
+        with self._connect() as connection:
+            gap = connection.execute(
+                "SELECT * FROM evidence_gaps WHERE gap_id = ?", (gap_id,)
+            ).fetchone()
+            if gap is None:
+                raise StorageError(f"Evidence gap {gap_id} was not found.")
+            reviews = connection.execute(
+                "SELECT * FROM evidence_gap_reviews WHERE gap_id = ? ORDER BY rowid",
+                (gap_id,),
+            ).fetchall()
+        initial = self._evidence_gap_from_row(
+            {**dict(gap), "status": "OPEN", "reviewed_by": None,
+             "reviewed_at": None, "review_rationale": None}
+        )
+        result = [initial]
+        for review in reviews:
+            status = "OPEN" if review["decision"] == "REOPENED" else review["decision"]
+            result.append(
+                replace(
+                    initial,
+                    status=status,
+                    reviewed_by=review["reviewed_by"],
+                    reviewed_at=review["reviewed_at"],
+                    review_rationale=review["rationale"],
+                )
+            )
+        return result
 
     @staticmethod
     def _duplicate_relationship_from_row(row: sqlite3.Row) -> DuplicateRelationship:

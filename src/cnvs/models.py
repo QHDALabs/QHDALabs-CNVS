@@ -322,6 +322,61 @@ class IndependenceAssignment:
     supporting_link_ids: tuple[str, ...]
 
 
+@dataclass(frozen=True)
+class EvidenceReview:
+    review_id: str
+    evidence_id: str
+    verification_status: str
+    reviewed_by: str
+    reviewed_at: str
+    rationale: str
+    analyst_note: str | None
+
+
+@dataclass(frozen=True)
+class EvidenceNote:
+    note_id: str
+    evidence_id: str
+    analyst: str
+    noted_at: str
+    note: str
+    rationale: str
+
+
+@dataclass(frozen=True)
+class ClaimEvidenceLink:
+    link_id: str
+    event_id: str
+    claim_id: str
+    evidence_id: str
+    relationship: str
+    proposed_by: str
+    proposed_at: str
+    rationale: str
+    review_status: str
+    reviewed_by: str | None
+    reviewed_at: str | None
+    review_rationale: str | None
+
+
+@dataclass(frozen=True)
+class EvidenceGap:
+    gap_id: str
+    event_id: str
+    claim_id: str | None
+    gap_type: str
+    description: str
+    created_by: str
+    created_at: str
+    rationale: str
+    supporting_link_id: str | None
+    contradicting_link_id: str | None
+    status: str
+    reviewed_by: str | None
+    reviewed_at: str | None
+    review_rationale: str | None
+
+
 CanonicalRecord: TypeAlias = Event | Source | Claim | Evidence | Assessment
 RECORD_TYPES: dict[str, type[CanonicalRecord]] = {
     model.record_type: model

@@ -242,3 +242,55 @@ connect different accepted groups, resolve and re-review those assignments
 before confirming the link. Analysts remain responsible for the rationale.
 Until a dependency is resolved, represent it as `UNRESOLVED` or record origin
 uncertainty rather than treating the reporting as independent.
+
+## Evidence, claim relations and explicit gaps
+
+Stage 9 stores evidence as a canonical, versioned `Evidence` record with an
+event ID, source ID, observation, collection time, nullable event time,
+directness and initial verification status. The source ID resolves to the
+canonical source record and its collection/snapshot provenance when retained;
+the event and source times remain distinct. `PRIMARY`, `SECONDARY` and
+`UNKNOWN` describe directness, not truth or reliability.
+
+`cnvs source record --file source.json` and `cnvs claim record --file
+claim.json` store validated canonical records needed by this workflow. A
+canonical claim is entered/reviewed material; this command does not accept or
+promote a Stage 7 extraction candidate.
+
+`cnvs evidence create --file evidence.json` validates and records the evidence
+once; corrections must be recorded as a new canonical revision through the
+storage API rather than rewriting history. `evidence list` displays its
+source, event/collection times, directness and effective verification state.
+Verification decisions (`IN_REVIEW`, `VERIFIED`, `REJECTED`) append a reviewer,
+timestamp and rationale. The current effective verification state is the most
+recent review decision, or the canonical record's initial status when there is
+no review; review does not rewrite the evidence payload. Analyst notes can be
+added separately with their author, timestamp and rationale, and notes added
+during a verification review are likewise attributed.
+
+Claim/evidence relationships are proposed separately from claim records and
+start `PENDING`. The only relationship types are `SUPPORTS`, `CONTRADICTS` and
+`NOT_DIRECTLY_RELEVANT`. A reviewer must append `LINKED`, `REJECTED` or
+`UNRESOLVED` with a rationale before a relation is treated as reviewed.
+Claim and evidence must belong to the same event, and a claim/evidence pair
+cannot have multiple active relationships. To revise one, resolve its current
+relationship before proposing another. These relation/review records retain
+their own history; the claim's legacy evidence ID arrays are not a substitute
+for a reviewed relation.
+
+Evidence gaps are explicit, append-only records scoped to an event and
+optionally a claim: `MISSING` means the needed evidence is absent,
+`INSUFFICIENT` means the available evidence does not settle the question, and
+`CONFLICTING` records incompatible reviewed evidence. A conflicting gap must
+reference a `LINKED` `SUPPORTS` relation and a distinct `LINKED` `CONTRADICTS`
+relation for the same claim. Gap reviews can resolve, dismiss or reopen the
+gap; they preserve who decided, when and why. A gap records an information
+state, not proof that a claim is false. No claim status, verification state,
+source volume or independence count is inferred from these records.
+
+`cnvs evidence links --status LINKED` inspects reviewed relations, while
+`evidence link-history LINK-ID`, `evidence history EVIDENCE-ID` and
+`evidence gap-history GAP-ID` expose the append-only decision history.
+`evidence gaps` lists open or reviewed gaps; `evidence gap` records missing,
+insufficient or conflicting evidence. These operations do not perform
+automated contradiction detection or verify the truth of an observation.

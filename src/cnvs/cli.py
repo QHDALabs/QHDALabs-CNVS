@@ -11,14 +11,21 @@ from cnvs.collection import collect_source, find_registration, retry_collection
 from cnvs.configuration import ConfigurationError, validate_configuration
 from cnvs.models import (
     CollectionResult,
+    Claim,
+    ClaimEvidenceLink,
     ClaimExtraction,
     DuplicateRelationship,
     Event,
     EventSourceMatch,
+    Evidence,
+    EvidenceGap,
+    EvidenceNote,
+    EvidenceReview,
     IndependenceAssignment,
     NormalizedDocument,
     ProvenanceLink,
     ProvenanceOriginAssessment,
+    Source,
     TimelineEntry,
     TranslationRecord,
 )
@@ -71,6 +78,11 @@ def _build_parser() -> argparse.ArgumentParser:
     source_commands = source_parser.add_subparsers(
         dest="source_command", required=True
     )
+    source_record = source_commands.add_parser(
+        "record", help="Store or revise a canonical source record from JSON."
+    )
+    source_record.add_argument("--file", required=True, help="Source JSON file.")
+    source_record.add_argument("--database", help="SQLite database file.")
     source_list = source_commands.add_parser(
         "list", help="List registered sources and review state."
     )
@@ -229,6 +241,11 @@ def _build_parser() -> argparse.ArgumentParser:
     claim_commands = claim_parser.add_subparsers(
         dest="claim_command", required=True
     )
+    claim_record = claim_commands.add_parser(
+        "record", help="Store or revise a canonical claim record from JSON."
+    )
+    claim_record.add_argument("--file", required=True, help="Claim JSON file.")
+    claim_record.add_argument("--database", help="SQLite database file.")
     claim_extract = claim_commands.add_parser(
         "extract",
         help="Validate and store analyst/tool-supplied candidate claims from JSON.",
@@ -269,6 +286,138 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     claim_history.add_argument("candidate_id")
     claim_history.add_argument("--database", help="SQLite database file.")
+
+    evidence_parser = commands.add_parser(
+        "evidence", help="Record evidence, review verification and inspect claim relations."
+    )
+    evidence_commands = evidence_parser.add_subparsers(
+        dest="evidence_command", required=True
+    )
+    evidence_create = evidence_commands.add_parser(
+        "create", help="Record a validated evidence JSON file."
+    )
+    evidence_create.add_argument("--file", required=True)
+    evidence_create.add_argument("--database", help="SQLite database file.")
+    evidence_list = evidence_commands.add_parser(
+        "list", help="List evidence records and their source/event-time context."
+    )
+    evidence_list.add_argument("--event-id")
+    evidence_list.add_argument("--source-id")
+    evidence_list.add_argument("--database", help="SQLite database file.")
+    evidence_review = evidence_commands.add_parser(
+        "review", help="Append a verification decision and analyst rationale."
+    )
+    evidence_review.add_argument("evidence_id")
+    evidence_review.add_argument(
+        "--status", required=True, choices=("IN_REVIEW", "VERIFIED", "REJECTED")
+    )
+    evidence_review.add_argument("--reviewer", required=True)
+    evidence_review.add_argument("--rationale", required=True)
+    evidence_review.add_argument("--note")
+    evidence_review.add_argument("--reviewed-at")
+    evidence_review.add_argument("--database", help="SQLite database file.")
+    evidence_note = evidence_commands.add_parser(
+        "note", help="Add an attributed analyst note with time and rationale."
+    )
+    evidence_note.add_argument("evidence_id")
+    evidence_note.add_argument("--analyst", required=True)
+    evidence_note.add_argument("--note", required=True)
+    evidence_note.add_argument("--rationale", required=True)
+    evidence_note.add_argument("--noted-at")
+    evidence_note.add_argument("--database", help="SQLite database file.")
+    evidence_notes = evidence_commands.add_parser(
+        "notes", help="List attributed analyst notes for evidence."
+    )
+    evidence_notes.add_argument("evidence_id")
+    evidence_notes.add_argument("--database", help="SQLite database file.")
+    evidence_history = evidence_commands.add_parser(
+        "history", help="Show append-only verification decisions for evidence."
+    )
+    evidence_history.add_argument("evidence_id")
+    evidence_history.add_argument("--database", help="SQLite database file.")
+    evidence_link = evidence_commands.add_parser(
+        "link", help="Propose a rationale-bearing claim/evidence relationship."
+    )
+    evidence_link.add_argument("claim_id")
+    evidence_link.add_argument("evidence_id")
+    evidence_link.add_argument(
+        "--relationship",
+        required=True,
+        choices=("SUPPORTS", "CONTRADICTS", "NOT_DIRECTLY_RELEVANT"),
+    )
+    evidence_link.add_argument("--proposed-by", required=True)
+    evidence_link.add_argument("--rationale", required=True)
+    evidence_link.add_argument("--proposed-at")
+    evidence_link.add_argument("--database", help="SQLite database file.")
+    evidence_review_link = evidence_commands.add_parser(
+        "review-link", help="Review a proposed claim/evidence relationship."
+    )
+    evidence_review_link.add_argument("link_id")
+    evidence_review_link.add_argument(
+        "--decision", required=True, choices=("LINKED", "REJECTED", "UNRESOLVED")
+    )
+    evidence_review_link.add_argument("--reviewer", required=True)
+    evidence_review_link.add_argument("--rationale", required=True)
+    evidence_review_link.add_argument("--reviewed-at")
+    evidence_review_link.add_argument("--database", help="SQLite database file.")
+    evidence_links = evidence_commands.add_parser(
+        "links", help="List proposed and reviewed claim/evidence relationships."
+    )
+    evidence_links.add_argument("--event-id")
+    evidence_links.add_argument("--claim-id")
+    evidence_links.add_argument("--evidence-id")
+    evidence_links.add_argument(
+        "--status", choices=("PENDING", "LINKED", "REJECTED", "UNRESOLVED")
+    )
+    evidence_links.add_argument("--database", help="SQLite database file.")
+    evidence_link_history = evidence_commands.add_parser(
+        "link-history", help="Show proposal and append-only reviews for a relationship."
+    )
+    evidence_link_history.add_argument("link_id")
+    evidence_link_history.add_argument("--database", help="SQLite database file.")
+    evidence_gap = evidence_commands.add_parser(
+        "gap", help="Record a missing, insufficient or conflicting evidence gap."
+    )
+    evidence_gap.add_argument("event_id")
+    evidence_gap.add_argument(
+        "--type", dest="gap_type", required=True,
+        choices=("MISSING", "INSUFFICIENT", "CONFLICTING"),
+    )
+    evidence_gap.add_argument("--description", required=True)
+    evidence_gap.add_argument("--analyst", required=True)
+    evidence_gap.add_argument("--rationale", required=True)
+    evidence_gap.add_argument("--claim-id")
+    evidence_gap.add_argument("--supporting-link")
+    evidence_gap.add_argument("--contradicting-link")
+    evidence_gap.add_argument("--created-at")
+    evidence_gap.add_argument("--database", help="SQLite database file.")
+    evidence_gaps = evidence_commands.add_parser(
+        "gaps", help="List explicit evidence gaps and their current status."
+    )
+    evidence_gaps.add_argument("--event-id")
+    evidence_gaps.add_argument("--claim-id")
+    evidence_gaps.add_argument(
+        "--type", dest="gap_type",
+        choices=("MISSING", "INSUFFICIENT", "CONFLICTING"),
+    )
+    evidence_gaps.add_argument("--status", choices=("OPEN", "RESOLVED", "DISMISSED"))
+    evidence_gaps.add_argument("--database", help="SQLite database file.")
+    evidence_review_gap = evidence_commands.add_parser(
+        "review-gap", help="Resolve, dismiss or reopen an evidence gap."
+    )
+    evidence_review_gap.add_argument("gap_id")
+    evidence_review_gap.add_argument(
+        "--decision", required=True, choices=("RESOLVED", "DISMISSED", "REOPENED")
+    )
+    evidence_review_gap.add_argument("--reviewer", required=True)
+    evidence_review_gap.add_argument("--rationale", required=True)
+    evidence_review_gap.add_argument("--reviewed-at")
+    evidence_review_gap.add_argument("--database", help="SQLite database file.")
+    evidence_gap_history = evidence_commands.add_parser(
+        "gap-history", help="Show an evidence gap and its append-only review history."
+    )
+    evidence_gap_history.add_argument("gap_id")
+    evidence_gap_history.add_argument("--database", help="SQLite database file.")
 
     provenance_parser = commands.add_parser(
         "provenance", help="Trace source dependencies and review evidence independence."
@@ -620,6 +769,82 @@ def _print_independence_assignment(assignment: IndependenceAssignment) -> None:
         )
 
 
+def _print_evidence(
+    evidence: Evidence, *, verification_status: str | None = None
+) -> None:
+    status = verification_status or evidence.verification_status
+    print(
+        f"{evidence.evidence_id} event={evidence.event_id} source={evidence.source_id} "
+        f"type={evidence.evidence_type} directness={evidence.directness} "
+        f"verification={status}"
+    )
+    print(
+        f"  collection_time={evidence.collection_time} event_time={evidence.event_time} "
+        f"independence_group={evidence.independence_group}"
+    )
+    print(f"  observation={evidence.observation}")
+    print(f"  analyst_notes={evidence.analyst_notes}")
+    if evidence.reliability_assessment:
+        print(f"  reliability_assessment={evidence.reliability_assessment}")
+
+
+def _print_evidence_review(review: EvidenceReview) -> None:
+    print(
+        f"{review.review_id} evidence={review.evidence_id} "
+        f"verification={review.verification_status} reviewer={review.reviewed_by} "
+        f"reviewed_at={review.reviewed_at}"
+    )
+    print(f"  rationale={review.rationale}")
+    if review.analyst_note:
+        print(f"  analyst_note={review.analyst_note}")
+
+
+def _print_evidence_note(note: EvidenceNote) -> None:
+    print(
+        f"{note.note_id} evidence={note.evidence_id} analyst={note.analyst} "
+        f"noted_at={note.noted_at}"
+    )
+    print(f"  note={note.note}")
+    print(f"  rationale={note.rationale}")
+
+
+def _print_claim_evidence_link(link: ClaimEvidenceLink) -> None:
+    print(
+        f"{link.link_id} event={link.event_id} claim={link.claim_id} "
+        f"evidence={link.evidence_id} relationship={link.relationship} "
+        f"status={link.review_status}"
+    )
+    print(f"  proposed_by={link.proposed_by} proposed_at={link.proposed_at}")
+    print(f"  proposal_rationale={link.rationale}")
+    if link.reviewed_by is not None:
+        print(
+            f"  reviewed_by={link.reviewed_by} reviewed_at={link.reviewed_at} "
+            f"review_rationale={link.review_rationale}"
+        )
+
+
+def _print_evidence_gap(gap: EvidenceGap) -> None:
+    print(
+        f"{gap.gap_id} event={gap.event_id} claim={gap.claim_id} "
+        f"type={gap.gap_type} status={gap.status}"
+    )
+    print(
+        f"  description={gap.description} created_by={gap.created_by} "
+        f"created_at={gap.created_at}"
+    )
+    print(f"  rationale={gap.rationale}")
+    if gap.supporting_link_id or gap.contradicting_link_id:
+        print(
+            f"  supporting_link={gap.supporting_link_id} "
+            f"contradicting_link={gap.contradicting_link_id}"
+        )
+    if gap.reviewed_by is not None:
+        print(
+            f"  reviewed_by={gap.reviewed_by} reviewed_at={gap.reviewed_at} "
+            f"review_rationale={gap.review_rationale}"
+        )
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     parser = _build_parser()
     args = parser.parse_args(argv)
@@ -758,6 +983,18 @@ def main(argv: Sequence[str] | None = None) -> int:
                 database_path_override=args.database
             )
             database = Database(settings.database_path)
+            if args.claim_command == "record":
+                payload = json.loads(
+                    Path(args.file).expanduser().read_text(encoding="utf-8")
+                )
+                if not isinstance(payload, dict):
+                    raise ValueError("Claim input must be a JSON object.")
+                claim = parse_record("claim", payload)
+                if not isinstance(claim, Claim):
+                    raise ValueError("Claim input did not produce a Claim record.")
+                revision = database.save(claim)
+                print(f"Stored claim {claim.claim_id} at revision {revision}.")
+                return 0
             if args.claim_command == "extract":
                 payload = json.loads(
                     Path(args.file).expanduser().read_text(encoding="utf-8")
@@ -824,6 +1061,185 @@ def main(argv: Sequence[str] | None = None) -> int:
             history = database.claim_extraction_history(args.candidate_id)
             for candidate in history:
                 _print_claim_extraction(candidate)
+            return 0
+
+        if args.command == "evidence":
+            settings = Settings.from_environment(
+                database_path_override=args.database
+            )
+            database = Database(settings.database_path)
+            command = args.evidence_command
+            if command == "create":
+                payload = json.loads(
+                    Path(args.file).expanduser().read_text(encoding="utf-8")
+                )
+                if not isinstance(payload, dict):
+                    raise ValueError("Evidence input must be a JSON object.")
+                evidence = parse_record("evidence", payload)
+                if not isinstance(evidence, Evidence):
+                    raise ValueError("Evidence input did not produce an Evidence record.")
+                database.record_evidence(evidence)
+                _print_evidence(evidence)
+                return 0
+            if command == "list":
+                records = database.evidence_records(
+                    event_id=args.event_id, source_id=args.source_id
+                )
+                if not records:
+                    print("No evidence records found.")
+                for evidence in records:
+                    _print_evidence(
+                        evidence,
+                        verification_status=database.evidence_verification_status(
+                            evidence.evidence_id
+                        ),
+                    )
+                return 0
+            if command == "review":
+                reviewed_at = args.reviewed_at or (
+                    datetime.now(timezone.utc)
+                    .isoformat(timespec="seconds")
+                    .replace("+00:00", "Z")
+                )
+                review = database.review_evidence(
+                    evidence_id=args.evidence_id,
+                    verification_status=args.status,
+                    reviewed_by=args.reviewer,
+                    reviewed_at=reviewed_at,
+                    rationale=args.rationale,
+                    analyst_note=args.note,
+                )
+                _print_evidence_review(review)
+                return 0
+            if command == "note":
+                noted_at = args.noted_at or (
+                    datetime.now(timezone.utc)
+                    .isoformat(timespec="seconds")
+                    .replace("+00:00", "Z")
+                )
+                note = database.add_evidence_note(
+                    evidence_id=args.evidence_id,
+                    analyst=args.analyst,
+                    noted_at=noted_at,
+                    note=args.note,
+                    rationale=args.rationale,
+                )
+                _print_evidence_note(note)
+                return 0
+            if command == "notes":
+                notes = database.evidence_notes(args.evidence_id)
+                if not notes:
+                    print("No attributed analyst notes found.")
+                for note in notes:
+                    _print_evidence_note(note)
+                return 0
+            if command == "history":
+                history = database.evidence_review_history(args.evidence_id)
+                if not history:
+                    evidence = database.get("evidence", args.evidence_id)
+                    if isinstance(evidence, Evidence):
+                        print(
+                            f"{evidence.evidence_id} initial verification="
+                            f"{evidence.verification_status}; no analyst reviews."
+                        )
+                for review in history:
+                    _print_evidence_review(review)
+                return 0
+            if command == "link":
+                proposed_at = args.proposed_at or (
+                    datetime.now(timezone.utc)
+                    .isoformat(timespec="seconds")
+                    .replace("+00:00", "Z")
+                )
+                link = database.propose_claim_evidence_link(
+                    claim_id=args.claim_id,
+                    evidence_id=args.evidence_id,
+                    relationship=args.relationship,
+                    proposed_by=args.proposed_by,
+                    proposed_at=proposed_at,
+                    rationale=args.rationale,
+                )
+                _print_claim_evidence_link(link)
+                return 0
+            if command == "review-link":
+                reviewed_at = args.reviewed_at or (
+                    datetime.now(timezone.utc)
+                    .isoformat(timespec="seconds")
+                    .replace("+00:00", "Z")
+                )
+                link = database.review_claim_evidence_link(
+                    link_id=args.link_id,
+                    decision=args.decision,
+                    reviewed_by=args.reviewer,
+                    reviewed_at=reviewed_at,
+                    rationale=args.rationale,
+                )
+                _print_claim_evidence_link(link)
+                return 0
+            if command == "links":
+                links = database.claim_evidence_links(
+                    event_id=args.event_id,
+                    claim_id=args.claim_id,
+                    evidence_id=args.evidence_id,
+                    review_status=args.status,
+                )
+                if not links:
+                    print("No claim/evidence relationships found.")
+                for link in links:
+                    _print_claim_evidence_link(link)
+                return 0
+            if command == "link-history":
+                for link in database.claim_evidence_link_history(args.link_id):
+                    _print_claim_evidence_link(link)
+                return 0
+            if command == "gap":
+                created_at = args.created_at or (
+                    datetime.now(timezone.utc)
+                    .isoformat(timespec="seconds")
+                    .replace("+00:00", "Z")
+                )
+                gap = database.record_evidence_gap(
+                    event_id=args.event_id,
+                    claim_id=args.claim_id,
+                    gap_type=args.gap_type,
+                    description=args.description,
+                    created_by=args.analyst,
+                    created_at=created_at,
+                    rationale=args.rationale,
+                    supporting_link_id=args.supporting_link,
+                    contradicting_link_id=args.contradicting_link,
+                )
+                _print_evidence_gap(gap)
+                return 0
+            if command == "gaps":
+                gaps = database.evidence_gaps(
+                    event_id=args.event_id,
+                    claim_id=args.claim_id,
+                    gap_type=args.gap_type,
+                    status=args.status,
+                )
+                if not gaps:
+                    print("No evidence gaps found.")
+                for gap in gaps:
+                    _print_evidence_gap(gap)
+                return 0
+            if command == "review-gap":
+                reviewed_at = args.reviewed_at or (
+                    datetime.now(timezone.utc)
+                    .isoformat(timespec="seconds")
+                    .replace("+00:00", "Z")
+                )
+                gap = database.review_evidence_gap(
+                    gap_id=args.gap_id,
+                    decision=args.decision,
+                    reviewed_by=args.reviewer,
+                    reviewed_at=reviewed_at,
+                    rationale=args.rationale,
+                )
+                _print_evidence_gap(gap)
+                return 0
+            for gap in database.evidence_gap_history(args.gap_id):
+                _print_evidence_gap(gap)
             return 0
 
         if args.command == "provenance":
@@ -1003,6 +1419,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 return 0
 
             if args.source_command in {
+                "record",
                 "normalize",
                 "documents",
                 "duplicates",
@@ -1014,6 +1431,18 @@ def main(argv: Sequence[str] | None = None) -> int:
                     database_path_override=args.database
                 )
                 database = Database(settings.database_path)
+                if args.source_command == "record":
+                    payload = json.loads(
+                        Path(args.file).expanduser().read_text(encoding="utf-8")
+                    )
+                    if not isinstance(payload, dict):
+                        raise ValueError("Source input must be a JSON object.")
+                    source = parse_record("source", payload)
+                    if not isinstance(source, Source):
+                        raise ValueError("Source input did not produce a Source record.")
+                    revision = database.save(source)
+                    print(f"Stored source {source.source_id} at revision {revision}.")
+                    return 0
                 if args.source_command == "normalize":
                     documents, relationships = normalize_collection(
                         database, args.collection_id

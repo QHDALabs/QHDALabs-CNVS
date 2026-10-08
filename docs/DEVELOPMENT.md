@@ -2,10 +2,11 @@
 
 The Python CLI validates the reviewed MVP configuration, manages local SQLite
 persistence, supports explicitly approved public RSS/URL collection, and
-records source-grounded claim extraction candidates, traces provenance and
-supports reviewed independence groups. Automatic NLP/LLM extraction,
-automated event analysis, report generation, authentication and an API are not
-implemented.
+records source-grounded claim extraction candidates, traces provenance,
+supports reviewed independence groups, and stores reviewed evidence/claim
+relations with explicit evidence gaps. Automatic NLP/LLM extraction,
+automated event matching or contradiction detection, report generation,
+authentication and an API are not implemented.
 
 ## Requirements
 
@@ -83,10 +84,22 @@ cnvs event timeline CNVS-EVT-2026-10-08-0001
 cnvs event timeline-edit ENTRY-ID --event-time 2026-10-07T08:15:00Z --analyst analyst --rationale "Primary notice confirms occurrence time"
 cnvs event timeline-edit ENTRY-ID --clear-event-time --analyst analyst --rationale "Previously recorded time was publication time"
 cnvs event timeline-history ENTRY-ID
+cnvs source record --file source-record.json
+cnvs claim record --file claim-record.json
 cnvs claim extract CNVS-EVT-2026-10-08-0001 DOCUMENT-ID --file candidates.json --method "analyst-assisted JSON import" --extractor analyst
 cnvs claim list --event-id CNVS-EVT-2026-10-08-0001 --status PENDING
 cnvs claim review CANDIDATE-ID --decision CORRECTED --reviewer analyst --rationale "Refined extraction" --correction-file corrected-candidate.json
 cnvs claim history CANDIDATE-ID
+cnvs evidence create --file evidence-record.json
+cnvs evidence list --event-id CNVS-EVT-2026-10-08-0001
+cnvs evidence review EVIDENCE-ID --status IN_REVIEW --reviewer analyst --rationale "Checking source provenance"
+cnvs evidence note EVIDENCE-ID --analyst analyst --note "Only the visible feature is described" --rationale "Separate observation from interpretation"
+cnvs evidence link CLAIM-ID EVIDENCE-ID --relationship SUPPORTS --proposed-by analyst --rationale "The observation is consistent with the proposition"
+cnvs evidence review-link LINK-ID --decision LINKED --reviewer reviewer --rationale "Relation checked against the source material"
+cnvs evidence links --claim-id CLAIM-ID --status LINKED
+cnvs evidence gap CNVS-EVT-2026-10-08-0001 --type MISSING --description "No independent direct observation" --analyst analyst --rationale "Only secondary reporting is available"
+cnvs evidence gaps --event-id CNVS-EVT-2026-10-08-0001 --status OPEN
+cnvs evidence review-gap GAP-ID --decision RESOLVED --reviewer reviewer --rationale "The identified gap has been addressed"
 cnvs provenance link DOCUMENT-ID UPSTREAM-DOCUMENT-ID --type SYNDICATED --proposed-by analyst --rationale "Publisher credits the upstream report"
 cnvs provenance review-link LINK-ID --decision CONFIRMED --reviewer reviewer --rationale "The byline identifies the originating report"
 cnvs provenance links --document-id DOCUMENT-ID --status PENDING

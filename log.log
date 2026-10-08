@@ -285,7 +285,7 @@ Pylance and workspace problem checks report no errors in changed Python files.
 
 Stage 9 — Record evidence and contradictions
 --------------------------------------------
-Status: TODO
+Status: DONE
 Tasks:
 - Implement evidence records for direct observations and relevant primary
   material, including collection time, event time, directness and verification
@@ -298,6 +298,21 @@ Done when:
 - Each evidence item has traceable origin and verification status.
 - Claim support and contradiction are inspectable and not inferred from article
   volume alone.
+Outcome: Added migration 007 for append-only evidence verification reviews and
+attributed analyst notes, rationale-bearing claim/evidence relationships
+(SUPPORTS, CONTRADICTS and NOT_DIRECTLY_RELEVANT), and explicit MISSING,
+INSUFFICIENT and CONFLICTING evidence gaps. Evidence retains source, event,
+collection and event-time provenance separately; current verification state
+comes from the latest reviewed decision without rewriting the original
+evidence record. Conflict gaps require distinct, reviewed supporting and
+contradicting links for the same claim. CLI commands expose record, review,
+history and gap workflows; prior decisions remain auditable. No automated
+contradiction detection, truth verification or confirmation counting is
+claimed.
+Validation: All 87 tests pass on Python 3.14.5, including focused evidence
+workflow and CLI tests. A fresh SQLite database applies all seven migrations;
+Pylance reports no errors in changed Python files, and `git diff --check`
+passes.
 
 Stage 10 — Build the national information matrix
 ------------------------------------------------
@@ -375,7 +390,7 @@ MVP EXIT CHECKLIST
 [ ] Claims and attribution are extracted or entered and linked to sources.
 [ ] Analysts can inspect and correct candidate claims.
 [ ] Basic source graph and evidence independence groups are available.
-[ ] Evidence, contradictions and unresolved gaps are represented.
+[x] Evidence, contradictions and unresolved gaps are represented.
 [ ] Event timeline is available with distinct event/publication/collection times.
 [ ] National information matrix supports the selected 10–15 countries.
 [ ] Markdown and HTML reports are generated from versioned records.
