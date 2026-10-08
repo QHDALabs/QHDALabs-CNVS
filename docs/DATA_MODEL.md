@@ -97,6 +97,40 @@ including `robots.txt` restrictions; blocked work is not silently retried.
 
 RSS collection retains the feed snapshot only when explicitly permitted and
 records item GUID/ID/link values as origin identifiers. URL collection records
-the requested and final URL; fetched page bodies are not parsed or transformed
-in this stage. When archiving is not permitted, the body is discarded after
-collection and only metadata and a digest are retained.
+the requested and final URL; document parsing and normalization run separately
+after successful collection, as described below.
+
+## Normalized documents, translations and duplicate review
+
+Stage 5 parses retained RSS/Atom entries and retained HTML pages into immutable
+`NormalizedDocument` records. Each document keeps extracted original title
+and text alongside conservative NFC/whitespace-normalized forms. The raw
+collection snapshot remains the byte-for-byte source representation. Original
+and canonical URL, publisher, publication timestamp and timezone knowledge are
+stored separately. Timestamp parsing never infers a timezone for an unzoned
+value; the original string is kept and the normalized timezone flag remains
+false.
+
+Language is recorded from an item/page declaration where supported, otherwise
+from the registry, or explicitly as `unknown`. Conflicts between a declared
+language and the registry, and unsupported document language declarations,
+are flagged `REVIEW_REQUIRED`. Stage 5 does not run a statistical language
+detector or generate translations. An analyst or external tool can append a
+translation record with the source text digest, source/target languages,
+method, translator and timestamp; it never replaces or becomes independent
+evidence from the original text.
+
+Duplicate detection creates links, never merges or deletes source documents.
+Normalized exact text hashes create `EXACT_TEXT_MATCH` candidates. Likely
+syndication candidates use shared canonical URLs/non-URL origin identifiers,
+or overlap in five-word shingles (Jaccard similarity at least 0.82; a similar
+title can lower the text threshold to 0.65). Every relationship begins
+`PENDING`: similarity is a review signal, not a factual conclusion or
+independence determination. Append-only analyst reviews record whether copies
+are dependent, separate evidence chains are documented, the match is rejected,
+or the relationship remains unresolved. Until review, a candidate must not
+be treated as independent confirmation.
+
+Normalization requires a successful collection whose source terms permitted
+retaining the source body. If archiving was disabled, text and derived content
+are not retained and normalization reports that content is unavailable.

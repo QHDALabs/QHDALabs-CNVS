@@ -2,11 +2,22 @@ import argparse
 import sqlite3
 import sys
 from collections.abc import Sequence
+from datetime import datetime, timezone
+from pathlib import Path
 
 from cnvs import __version__
 from cnvs.collection import collect_source, find_registration, retry_collection
 from cnvs.configuration import ConfigurationError, validate_configuration
-from cnvs.models import CollectionResult
+from cnvs.models import (
+    CollectionResult,
+    DuplicateRelationship,
+    NormalizedDocument,
+    TranslationRecord,
+)
+from cnvs.normalization import (
+    add_translation,
+    normalize_collection,
+)
 from cnvs.registry import load_source_registry
 from cnvs.settings import Settings
 from cnvs.storage import Database, StorageError
@@ -71,6 +82,58 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     source_results.add_argument("--source-id", help="Limit results to one registry source.")
     source_results.add_argument("--database", help="SQLite database file.")
+    source_normalize = source_commands.add_parser(
+        "normalize", help="Normalize a successful archived collection."
+    )
+    source_normalize.add_argument("collection_id")
+    source_normalize.add_argument("--database", help="SQLite database file.")
+    source_documents = source_commands.add_parser(
+        "documents", help="Inspect extracted original and normalized documents."
+    )
+    source_documents.add_argument("--collection-id")
+    source_documents.add_argument("--source-id")
+    source_documents.add_argument("--database", help="SQLite database file.")
+    source_duplicates = source_commands.add_parser(
+        "duplicates", help="Inspect exact duplicate and possible syndication matches."
+    )
+    source_duplicates.add_argument("--document-id")
+    source_duplicates.add_argument(
+        "--status", choices=("PENDING", "REVIEWED")
+    )
+    source_duplicates.add_argument("--database", help="SQLite database file.")
+    source_review = source_commands.add_parser(
+        "review-duplicate", help="Append an analyst decision to a duplicate match."
+    )
+    source_review.add_argument("relationship_id")
+    source_review.add_argument(
+        "--decision",
+        required=True,
+        choices=(
+            "CONFIRMED_DEPENDENT",
+            "INDEPENDENT_EVIDENCE_DOCUMENTED",
+            "REJECTED",
+            "UNRESOLVED",
+        ),
+    )
+    source_review.add_argument("--reviewer", required=True)
+    source_review.add_argument("--rationale", required=True)
+    source_review.add_argument("--reviewed-at")
+    source_review.add_argument("--database", help="SQLite database file.")
+    source_translation = source_commands.add_parser(
+        "translation-add", help="Record an analyst- or tool-produced translation."
+    )
+    source_translation.add_argument("document_id")
+    source_translation.add_argument("--target-language", required=True)
+    source_translation.add_argument("--method", required=True)
+    source_translation.add_argument("--translator", required=True)
+    source_translation.add_argument("--text-file", required=True)
+    source_translation.add_argument("--translated-at")
+    source_translation.add_argument("--database", help="SQLite database file.")
+    source_translation_list = source_commands.add_parser(
+        "translations", help="Inspect translation provenance for one document."
+    )
+    source_translation_list.add_argument("document_id")
+    source_translation_list.add_argument("--database", help="SQLite database file.")
     return parser
 
 
@@ -115,6 +178,67 @@ def _print_collection_result(result: CollectionResult) -> None:
         print(f"  error={result.error_code}: {result.error_message}")
 
 
+def _print_document(document: NormalizedDocument) -> None:
+    print(
+        f"{document.document_id} source={document.source_id} "
+        f"collection={document.collection_id} item={document.item_index}"
+    )
+    print(
+        f"  origin={document.origin_identifier} "
+        f"language={document.language} via={document.language_source} "
+        f"review={document.language_review_status}"
+    )
+    if document.declared_language and document.registry_language:
+        print(
+            f"  declared_language={document.declared_language} "
+            f"registry_language={document.registry_language}"
+        )
+    print(
+        f"  title_original={document.original_title!r} "
+        f"title_normalized={document.normalized_title!r}"
+    )
+    print(
+        f"  url_original={document.original_url} "
+        f"url_normalized={document.normalized_url}"
+    )
+    print(
+        f"  publisher_original={document.publisher_original!r} "
+        f"publisher_normalized={document.publisher_normalized!r}"
+    )
+    print(
+        f"  published_original={document.original_published_at!r} "
+        f"published_normalized={document.normalized_published_at!r} "
+        f"timezone_known={document.publication_timezone_known}"
+    )
+    print(f"  text_sha256={document.text_sha256}")
+    print(f"  text_original={document.original_text}")
+    print(f"  text_normalized={document.normalized_text}")
+
+
+def _print_duplicate(relationship: DuplicateRelationship) -> None:
+    print(
+        f"{relationship.relationship_id} {relationship.relationship_type} "
+        f"similarity={relationship.similarity:.3f} review={relationship.review_status}"
+    )
+    print(
+        f"  documents={relationship.document_id},{relationship.related_document_id} "
+        f"decision={relationship.review_decision} reviewer={relationship.reviewed_by}"
+    )
+    if relationship.rationale:
+        print(f"  rationale={relationship.rationale}")
+
+
+def _print_translation(translation: TranslationRecord) -> None:
+    print(
+        f"{translation.translation_id} document={translation.document_id} "
+        f"{translation.source_language}->{translation.target_language} "
+        f"method={translation.translation_method} translator={translation.translator} "
+        f"translated_at={translation.translated_at}"
+    )
+    print(f"  source_text_sha256={translation.source_text_sha256}")
+    print(f"  translated_text={translation.translated_text}")
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     parser = _build_parser()
     args = parser.parse_args(argv)
@@ -151,6 +275,92 @@ def main(argv: Sequence[str] | None = None) -> int:
                         f"{registration.language} {registration.publisher} | "
                         f"{registration.url}"
                     )
+                return 0
+
+            if args.source_command in {
+                "normalize",
+                "documents",
+                "duplicates",
+                "review-duplicate",
+                "translation-add",
+                "translations",
+            }:
+                settings = Settings.from_environment(
+                    database_path_override=args.database
+                )
+                database = Database(settings.database_path)
+                if args.source_command == "normalize":
+                    documents, relationships = normalize_collection(
+                        database, args.collection_id
+                    )
+                    print(
+                        f"Normalized {len(documents)} document(s); "
+                        f"recorded {len(relationships)} duplicate candidate(s)."
+                    )
+                    return 0
+                if args.source_command == "documents":
+                    if args.collection_id and args.source_id:
+                        raise ValueError(
+                            "Specify only one of --collection-id and --source-id."
+                        )
+                    documents = database.normalized_documents(
+                        collection_id=args.collection_id,
+                        source_id=args.source_id,
+                    )
+                    if not documents:
+                        print("No normalized documents found.")
+                    for document in documents:
+                        _print_document(document)
+                    return 0
+                if args.source_command == "duplicates":
+                    relationships = database.duplicate_relationships(
+                        document_id=args.document_id,
+                        review_status=args.status,
+                    )
+                    if not relationships:
+                        print("No duplicate relationships found.")
+                    for relationship in relationships:
+                        _print_duplicate(relationship)
+                    return 0
+                if args.source_command == "review-duplicate":
+                    reviewed_at = args.reviewed_at or (
+                        datetime.now(timezone.utc)
+                        .isoformat(timespec="seconds")
+                        .replace("+00:00", "Z")
+                    )
+                    relationship = database.review_duplicate_relationship(
+                        relationship_id=args.relationship_id,
+                        decision=args.decision,
+                        reviewed_by=args.reviewer,
+                        reviewed_at=reviewed_at,
+                        rationale=args.rationale,
+                    )
+                    _print_duplicate(relationship)
+                    return 0
+                if args.source_command == "translation-add":
+                    text_path = Path(args.text_file).expanduser()
+                    translated_text = text_path.read_bytes().decode("utf-8")
+                    translated_at = args.translated_at or (
+                        datetime.now(timezone.utc)
+                        .isoformat(timespec="seconds")
+                        .replace("+00:00", "Z")
+                    )
+                    translation = add_translation(
+                        database,
+                        document_id=args.document_id,
+                        translated_text=translated_text,
+                        target_language=args.target_language,
+                        translation_method=args.method,
+                        translator=args.translator,
+                        translated_at=translated_at,
+                    )
+                    _print_translation(translation)
+                    return 0
+                translations = database.translations(args.document_id)
+                if not translations:
+                    print("No translations found.")
+                for translation in translations:
+                    _print_translation(translation)
                 return 0
 
             if args.source_command == "results":

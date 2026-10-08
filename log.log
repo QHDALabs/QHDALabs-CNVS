@@ -9,7 +9,7 @@ that planned capabilities have been implemented.
 
 Status key: DONE = completed; TODO = not started; IN PROGRESS = active.
 Last updated: 2026-10-07
-Current project status: ARCHITECTURE SCAFFOLD; MVP NOT IMPLEMENTED
+Current project status: PARTIAL MVP IMPLEMENTATION; MVP NOT IMPLEMENTED
 
 
 COMPLETED
@@ -178,7 +178,7 @@ validated configuration, source registry and SQLite migration status.
 
 Stage 5 — Normalize, identify language and deduplicate sources
 --------------------------------------------------------------
-Status: TODO
+Status: DONE
 Tasks:
 - Preserve original text alongside normalized text.
 - Detect or record language and retain translation provenance.
@@ -190,6 +190,15 @@ Done when:
 - Repeated copies are linked to their identifiable origin where possible.
 - Duplicate detection never turns dependent copies into independent evidence.
 - Original source text and timestamps remain available.
+Outcome: Added immutable normalized-document and translation records, source
+snapshot-derived RSS/Atom/HTML parsing, conservative text/URL/publisher/time
+normalization, explicit language provenance, and pending duplicate/syndication
+relationships with append-only analyst decisions. Unsupported or conflicting
+language declarations are retained for review. Statistical language detection
+and automatic translation are intentionally not provided.
+Validation: All 64 tests pass on Python 3.14 and Python 3.12 from the installed
+wheel. The wheel includes the Stage 5 migration and the installed `cnvs` CLI
+starts successfully.
 
 Stage 6 — Resolve events and build timelines
 --------------------------------------------

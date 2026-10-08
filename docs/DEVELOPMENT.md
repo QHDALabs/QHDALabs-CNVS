@@ -62,6 +62,12 @@ cnvs source collect SOURCE-ID
 cnvs source results
 cnvs source results --source-id SOURCE-ID
 cnvs source retry COLLECTION-ID
+cnvs source normalize COLLECTION-ID
+cnvs source documents --collection-id COLLECTION-ID
+cnvs source duplicates --status PENDING
+cnvs source review-duplicate RELATIONSHIP-ID --decision CONFIRMED_DEPENDENT --reviewer analyst --rationale "Shared wire copy"
+cnvs source translation-add DOCUMENT-ID --target-language pl --method "analyst translation" --translator analyst --text-file translation.txt
+cnvs source translations DOCUMENT-ID
 ```
 
 Configuration directory resolution is:
@@ -109,7 +115,39 @@ protection against a source's terms changing after review.
 
 ## Local database
 
-Stages 3-4 use SQLite and apply checksummed migrations automatically when the
+### Normalization and duplicate review
+
+Run `cnvs source normalize COLLECTION-ID` only for successful collections
+whose registry permits archiving. The command extracts RSS/Atom item text or
+visible HTML text and stores both the extracted original and a normalized
+copy. It retains the original title, URL, publisher and publication timestamp;
+the normalized timestamp is UTC only when the source included a timezone.
+Unzoned timestamps are kept without inventing a timezone.
+
+Language comes from an item/page declaration, then the registry, or is stored
+as `unknown`; conflicts and unsupported declarations are explicitly marked for
+review. This release does not run automatic statistical language detection
+and does not translate content. Record a supplied translation with
+`source translation-add`; its source-text hash, language pair, method,
+translator and timestamp are retained separately.
+
+`source duplicates` shows exact normalized-text matches and likely
+syndication candidates. Exact matches are based on a SHA-256 hash of the
+normalized text. Possible syndication is signalled by shared canonical URL or
+origin identifiers, or by five-word-shingle Jaccard similarity of at least
+0.82 (0.65 when title similarity is at least 0.90). These are review
+candidates, not automatic merges or independent-evidence decisions. Candidates
+start pending; `source review-duplicate` appends a rationale-bearing analyst
+decision. Until then, do not count matching material as independent
+confirmation.
+
+The CLI displays extracted source text; use it only where the source terms
+permit retaining content. When `archive_content` is false, normalization is
+intentionally unavailable and no derived text is stored.
+
+## Local database
+
+Stages 3-5 use SQLite and apply checksummed migrations automatically when the
 database is opened. The default database path is `.data/cnvs.sqlite3`; override
 it with `CNVS_DATABASE_PATH` or `--database` on a database command:
 
@@ -127,7 +165,8 @@ production backup policy.
 
 Canonical JSON Schema records are validated before storage, and database
 revisions preserve prior record payloads. Raw snapshots are content-addressed;
-collection attempts are append-only and immutable. `cnvs db status` shows the
+collection attempts, normalized documents, translations, duplicate matches
+and duplicate-review decisions are append-only. `cnvs db status` shows the
 applied schema migrations; changed migration files are rejected and require a
 new migration instead.
 

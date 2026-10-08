@@ -103,10 +103,11 @@ python -m unittest discover -s tests -v
 ```
 
 The `cnvs` command validates configuration, manages the local SQLite schema,
-and collects approved public RSS/URL sources. Typed records, append-only
-collection history, provenance identifiers and immutable snapshots are
-available as runtime components. Event analysis and operational report
-generation are not implemented. See
+collects approved public RSS/URL sources, preserves normalized document text
+and provenance, records translations, and surfaces duplicate/syndication
+candidates for analyst review. Candidate links never merge source records or
+automatically designate evidence independent. Event analysis and operational
+report generation are not implemented. See
 [docs/DEVELOPMENT.md](./docs/DEVELOPMENT.md) for platform-specific setup and
 environment variable details.
 
@@ -126,7 +127,16 @@ python -m cnvs source list
 python -m cnvs source collect SOURCE-ID
 python -m cnvs source results
 python -m cnvs source retry COLLECTION-ID
+python -m cnvs source normalize COLLECTION-ID
+python -m cnvs source documents --collection-id COLLECTION-ID
+python -m cnvs source duplicates --status PENDING
 ```
+
+Normalization requires a retained source snapshot, so it is unavailable when
+the source registry disallows content archiving. Language is recorded from
+source declarations/registry or marked unknown; automated language detection
+and translation are not included. Analyst- or tool-produced translations are
+stored separately with provenance.
 
 ## Validation
 
@@ -141,9 +151,11 @@ python -m unittest discover -s tests -v
 Tests check JSON Schema validity and parity, example references, the confirmed
 MVP configuration, registry approval constraints, mocked RSS/URL collection,
 robots and public-address restrictions, append-only collection results,
-database migrations, record revision history, immutable source snapshots and
-assessment reconstruction. They do not validate live source availability,
-source rights, analyst conclusions or source approvals.
+normalization and preserved text/timestamp values, language uncertainty,
+translation provenance, exact and likely duplicate relationships, immutable
+normalized records, checksummed migrations, record revision history, source
+snapshots and assessment reconstruction. They do not validate live source
+availability, source rights, analyst conclusions or source approvals.
 
 ## Contributing
 

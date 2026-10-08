@@ -57,3 +57,21 @@ This software cannot determine whether collection or retention is lawful. A
 configuration review is not a substitute for legal/privacy approval, and
 source conditions may change after review. Do not place credentials, access
 tokens or personal analyst data in the registry.
+
+## Normalization and dependency review
+
+Normalization is derived data. Preserve the exact retained source snapshot and
+the text extracted from it; store normalized text, canonical URLs, normalized
+publisher names and parsed timestamps as separate values. Do not invent
+publication timezones or replace an original language declaration when it
+conflicts with registry metadata. Record unknown language and flag unresolved
+language conflicts for review. A translation must retain a link to the source
+text digest, source and target language, method, translator and timestamp.
+Translation is not independent evidence.
+
+Exact text matches and likely syndication/republication links are review
+candidates, not source merges, truth determinations or automatic
+independence assignments. Until an analyst records a rationale-bearing
+decision, a possible copy relationship remains pending and must not be counted
+as independent confirmation. Preserve both source records and their original
+provenance, including when a candidate relationship is later rejected.

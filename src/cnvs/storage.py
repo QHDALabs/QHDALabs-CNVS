@@ -1,5 +1,6 @@
 import hashlib
 import json
+import re
 import sqlite3
 import threading
 import uuid
@@ -16,9 +17,12 @@ from cnvs.models import (
     Claim,
     CollectionResult,
     Evidence,
+    DuplicateRelationship,
     JsonValue,
+    NormalizedDocument,
     RawSnapshot,
     Source,
+    TranslationRecord,
 )
 from cnvs.validation import (
     RecordValidationError,
@@ -43,6 +47,12 @@ def _utc_now() -> str:
 
 def _json_text(payload: dict[str, JsonValue]) -> str:
     return json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+
+
+_RFC3339_TIMESTAMP = re.compile(
+    r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?"
+    r"(?:Z|[+-]\d{2}:\d{2})$"
+)
 
 
 class Database:
@@ -522,6 +532,597 @@ class Database:
                     (source_id,),
                 ).fetchall()
         return [self._collection_result_from_row(row) for row in rows]
+
+    @staticmethod
+    def _normalized_document_from_row(row: sqlite3.Row) -> NormalizedDocument:
+        return NormalizedDocument(
+            document_id=row["document_id"],
+            collection_id=row["collection_id"],
+            source_id=row["source_id"],
+            item_index=row["item_index"],
+            origin_identifier=row["origin_identifier"],
+            original_title=row["original_title"],
+            normalized_title=row["normalized_title"],
+            original_text=row["original_text"],
+            normalized_text=row["normalized_text"],
+            original_url=row["original_url"],
+            normalized_url=row["normalized_url"],
+            publisher_original=row["publisher_original"],
+            publisher_normalized=row["publisher_normalized"],
+            language=row["language"],
+            language_source=row["language_source"],
+            language_review_status=row["language_review_status"],
+            registry_language=row["registry_language"],
+            declared_language=row["declared_language"],
+            original_published_at=row["original_published_at"],
+            normalized_published_at=row["normalized_published_at"],
+            publication_timezone_known=bool(row["publication_timezone_known"]),
+            text_sha256=row["text_sha256"],
+            normalized_text_sha256=row["normalized_text_sha256"],
+            created_at=row["created_at"],
+        )
+
+    def save_normalized_documents(
+        self, documents: list[NormalizedDocument]
+    ) -> tuple[list[NormalizedDocument], list[DuplicateRelationship]]:
+        if not documents:
+            return [], []
+        collection_ids = {document.collection_id for document in documents}
+        if len(collection_ids) != 1:
+            raise StorageError("A normalization batch must belong to one collection.")
+        collection_id = next(iter(collection_ids))
+        result = self.get_collection_result(collection_id)
+        if result.status != "SUCCEEDED":
+            raise StorageError(
+                f"Cannot normalize collection {collection_id} with status {result.status}."
+            )
+        if result.archived_content_ref is None:
+            raise StorageError(
+                f"Collection {collection_id} has no retained content for normalization."
+            )
+        snapshot = self.get_raw_snapshot(result.archived_content_ref)
+        from cnvs.normalization import parse_collection_documents
+
+        derived_documents = parse_collection_documents(
+            collection_id=result.collection_id,
+            source_id=result.source_id,
+            source_metadata=result.source_metadata,
+            source_url=result.source_url,
+            final_url=result.final_url,
+            content_type=result.content_type,
+            content=snapshot.content,
+            created_at=result.completed_at,
+        )
+        if documents != derived_documents:
+            raise StorageError(
+                f"Normalized documents do not match archived collection {collection_id}."
+            )
+        inserted_document_ids: list[str] = []
+        with self._lock, self._write_transaction() as connection:
+            collection = connection.execute(
+                """
+                SELECT source_id, status, archived_content_sha256
+                FROM collection_attempts WHERE collection_id = ?
+                """,
+                (collection_id,),
+            ).fetchone()
+            if (
+                collection is None
+                or collection["source_id"] != result.source_id
+                or collection["status"] != "SUCCEEDED"
+                or collection["archived_content_sha256"] != snapshot.content_sha256
+            ):
+                raise StorageError(
+                    f"Collection {collection_id} changed or failed its snapshot integrity check."
+                )
+            from cnvs.normalization import detect_relationship
+
+            for document in documents:
+                if document.source_id != result.source_id:
+                    raise StorageError(
+                        f"Document {document.document_id} source does not match its collection."
+                    )
+                if not document.original_text and not document.original_title:
+                    raise StorageError(
+                        f"Document {document.document_id} has no original title or text."
+                    )
+                actual_text_digest = hashlib.sha256(
+                    document.original_text.encode("utf-8")
+                ).hexdigest()
+                normalized_digest = hashlib.sha256(
+                    document.normalized_text.encode("utf-8")
+                ).hexdigest()
+                if (
+                    actual_text_digest != document.text_sha256
+                    or normalized_digest != document.normalized_text_sha256
+                ):
+                    raise StorageError(
+                        f"Document {document.document_id} text digest validation failed."
+                    )
+                language_states = {
+                    ("UNKNOWN", "UNKNOWN"),
+                    ("UNKNOWN", "REVIEW_REQUIRED"),
+                    ("DOCUMENT_DECLARED", "RECORDED"),
+                    ("DOCUMENT_DECLARED", "REVIEW_REQUIRED"),
+                    ("REGISTRY", "RECORDED"),
+                    ("REGISTRY", "REVIEW_REQUIRED"),
+                }
+                if (
+                    document.language_review_status == "UNKNOWN"
+                    and document.language != "unknown"
+                ) or (
+                    (document.language_source, document.language_review_status)
+                    not in language_states
+                ):
+                    raise StorageError(
+                        f"Document {document.document_id} has inconsistent language provenance."
+                    )
+                if document.language == "unknown" and document.language_source != "UNKNOWN":
+                    raise StorageError(
+                        f"Document {document.document_id} must explicitly mark unknown language."
+                    )
+                if document.language not in {
+                    "unknown", "pl", "de", "fr", "en", "fi", "et", "uk",
+                    "ro", "ka", "be", "ru",
+                }:
+                    raise StorageError(
+                        f"Document {document.document_id} has an unsupported language code."
+                    )
+                if document.normalized_published_at is not None:
+                    try:
+                        parsed_publication = datetime.fromisoformat(
+                            document.normalized_published_at.replace("Z", "+00:00")
+                        )
+                    except ValueError as error:
+                        raise StorageError(
+                            f"Document {document.document_id} has an invalid normalized timestamp."
+                        ) from error
+                    has_timezone = (
+                        parsed_publication.tzinfo is not None
+                        and parsed_publication.utcoffset() is not None
+                    )
+                    if has_timezone != document.publication_timezone_known:
+                        raise StorageError(
+                            f"Document {document.document_id} has inconsistent "
+                            "publication timezone metadata."
+                        )
+                    if document.publication_timezone_known and (
+                        _RFC3339_TIMESTAMP.fullmatch(
+                            document.normalized_published_at
+                        )
+                        is None
+                    ):
+                        raise StorageError(
+                            f"Document {document.document_id} normalized publication "
+                            "timestamp must be RFC3339."
+                        )
+                existing_row = connection.execute(
+                    """
+                    SELECT * FROM normalized_documents
+                    WHERE document_id = ?
+                    """,
+                    (document.document_id,),
+                ).fetchone()
+                if existing_row is not None:
+                    existing_document = self._normalized_document_from_row(
+                        existing_row
+                    )
+                    if existing_document != document:
+                        raise StorageError(
+                            f"Normalized document {document.document_id} already exists "
+                            "with different immutable content."
+                        )
+                    continue
+                same_item = connection.execute(
+                    """
+                    SELECT document_id FROM normalized_documents
+                    WHERE collection_id = ? AND item_index = ?
+                    """,
+                    (document.collection_id, document.item_index),
+                ).fetchone()
+                if same_item is not None:
+                    raise StorageError(
+                        f"Collection {collection_id} item {document.item_index} was "
+                        "already normalized with a different identity."
+                    )
+                connection.execute(
+                    """
+                    INSERT INTO normalized_documents (
+                        document_id, collection_id, source_id, item_index,
+                        origin_identifier, original_title, normalized_title,
+                        original_text, normalized_text, original_url, normalized_url,
+                        publisher_original, publisher_normalized, language,
+                        language_source, language_review_status, registry_language,
+                        declared_language, original_published_at,
+                        normalized_published_at, publication_timezone_known,
+                        text_sha256, normalized_text_sha256, created_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+                              ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        document.document_id,
+                        document.collection_id,
+                        document.source_id,
+                        document.item_index,
+                        document.origin_identifier,
+                        document.original_title,
+                        document.normalized_title,
+                        document.original_text,
+                        document.normalized_text,
+                        document.original_url,
+                        document.normalized_url,
+                        document.publisher_original,
+                        document.publisher_normalized,
+                        document.language,
+                        document.language_source,
+                        document.language_review_status,
+                        document.registry_language,
+                        document.declared_language,
+                        document.original_published_at,
+                        document.normalized_published_at,
+                        int(document.publication_timezone_known),
+                        document.text_sha256,
+                        document.normalized_text_sha256,
+                        document.created_at,
+                    ),
+                )
+                inserted_document_ids.append(document.document_id)
+                existing_rows = connection.execute(
+                    """
+                    SELECT * FROM normalized_documents
+                    WHERE document_id != ?
+                      AND (
+                        normalized_text_sha256 = ?
+                        OR (
+                            normalized_url IS NOT NULL
+                            AND normalized_url = ?
+                        )
+                    )
+                    """,
+                    (
+                        document.document_id,
+                        document.normalized_text_sha256,
+                        document.normalized_url,
+                    ),
+                ).fetchall()
+                if (
+                    document.normalized_text
+                    and len(document.normalized_text) >= 120
+                ):
+                    existing_rows += connection.execute(
+                        """
+                        SELECT * FROM normalized_documents
+                        WHERE document_id != ?
+                          AND length(normalized_text) >= 120
+                          AND document_id NOT IN (
+                              SELECT document_id FROM normalized_documents
+                              WHERE document_id != ?
+                                AND (
+                                    normalized_text_sha256 = ?
+                                    OR normalized_url = ?
+                                )
+                          )
+                        """,
+                        (
+                            document.document_id,
+                            document.document_id,
+                            document.normalized_text_sha256,
+                            document.normalized_url,
+                        ),
+                    ).fetchall()
+                for existing_row in existing_rows:
+                    existing = self._normalized_document_from_row(existing_row)
+                    relationship = detect_relationship(document, existing)
+                    if relationship is None:
+                        continue
+                    relationship_type, similarity = relationship
+                    first_id, second_id = sorted(
+                        (document.document_id, existing.document_id)
+                    )
+                    connection.execute(
+                        """
+                        INSERT OR IGNORE INTO duplicate_relationships (
+                            relationship_id, document_id, related_document_id,
+                            relationship_type, similarity, created_at
+                        ) VALUES (?, ?, ?, ?, ?, ?)
+                        """,
+                        (
+                            uuid.uuid4().hex,
+                            first_id,
+                            second_id,
+                            relationship_type,
+                            similarity,
+                            document.created_at,
+                        ),
+                    )
+            saved_rows = connection.execute(
+                """
+                SELECT * FROM normalized_documents
+                WHERE collection_id = ? ORDER BY item_index
+                """,
+                (collection_id,),
+            ).fetchall()
+        saved_documents = [
+            self._normalized_document_from_row(row) for row in saved_rows
+        ]
+        relationships = {
+            relationship.relationship_id: relationship
+            for document_id in (
+                inserted_document_ids
+                or [document.document_id for document in saved_documents]
+            )
+            for relationship in self.duplicate_relationships(
+                document_id=document_id
+            )
+        }
+        return saved_documents, list(relationships.values())
+
+    def normalized_documents(
+        self, *, collection_id: str | None = None, source_id: str | None = None
+    ) -> list[NormalizedDocument]:
+        if collection_id is not None and source_id is not None:
+            raise ValueError("Specify collection_id or source_id, not both.")
+        with self._connect() as connection:
+            if collection_id is not None:
+                rows = connection.execute(
+                    """
+                    SELECT * FROM normalized_documents
+                    WHERE collection_id = ? ORDER BY item_index
+                    """,
+                    (collection_id,),
+                ).fetchall()
+            elif source_id is not None:
+                rows = connection.execute(
+                    """
+                    SELECT * FROM normalized_documents
+                    WHERE source_id = ? ORDER BY created_at, item_index
+                    """,
+                    (source_id,),
+                ).fetchall()
+            else:
+                rows = connection.execute(
+                    "SELECT * FROM normalized_documents ORDER BY created_at, item_index"
+                ).fetchall()
+        return [self._normalized_document_from_row(row) for row in rows]
+
+    def add_translation(
+        self,
+        *,
+        document_id: str,
+        translated_text: str,
+        target_language: str,
+        translation_method: str,
+        translator: str,
+        translated_at: str,
+    ) -> TranslationRecord:
+        if target_language not in {
+            "pl", "de", "fr", "en", "fi", "et", "uk", "ro", "ka", "be", "ru"
+        }:
+            raise StorageError(f"Unsupported translation target language: {target_language}.")
+        if not translated_text.strip():
+            raise StorageError("Translated text must not be empty.")
+        if not translation_method.strip() or not translator.strip():
+            raise StorageError("Translation method and translator must be recorded.")
+        if _RFC3339_TIMESTAMP.fullmatch(translated_at) is None:
+            raise StorageError("translated_at must be an RFC3339 timestamp with a timezone.")
+        try:
+            parsed_at = datetime.fromisoformat(translated_at.replace("Z", "+00:00"))
+        except ValueError as error:
+            raise StorageError("translated_at must be a valid RFC3339 timestamp.") from error
+        if parsed_at.tzinfo is None or parsed_at.utcoffset() is None:
+            raise StorageError("translated_at must include a timezone.")
+        translation_id = uuid.uuid4().hex
+        with self._lock, self._write_transaction() as connection:
+            row = connection.execute(
+                "SELECT * FROM normalized_documents WHERE document_id = ?",
+                (document_id,),
+            ).fetchone()
+            if row is None:
+                raise StorageError(f"Normalized document {document_id} was not found.")
+            document = self._normalized_document_from_row(row)
+            if document.language == "unknown":
+                raise StorageError(
+                    "Cannot attach translation provenance while source language is unknown."
+                )
+            if document.language == target_language:
+                raise StorageError("Translation target language must differ from source language.")
+            connection.execute(
+                """
+                INSERT INTO translations (
+                    translation_id, document_id, source_text_sha256,
+                    source_language, target_language, translated_text,
+                    translation_method, translator, translated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    translation_id,
+                    document.document_id,
+                    document.text_sha256,
+                    document.language,
+                    target_language,
+                    translated_text,
+                    translation_method.strip(),
+                    translator.strip(),
+                    translated_at,
+                ),
+            )
+            translation_row = connection.execute(
+                "SELECT * FROM translations WHERE translation_id = ?",
+                (translation_id,),
+            ).fetchone()
+        return self._translation_from_row(translation_row)
+
+    @staticmethod
+    def _translation_from_row(row: sqlite3.Row) -> TranslationRecord:
+        return TranslationRecord(
+            translation_id=row["translation_id"],
+            document_id=row["document_id"],
+            source_text_sha256=row["source_text_sha256"],
+            source_language=row["source_language"],
+            target_language=row["target_language"],
+            translated_text=row["translated_text"],
+            translation_method=row["translation_method"],
+            translator=row["translator"],
+            translated_at=row["translated_at"],
+        )
+
+    def translations(self, document_id: str) -> list[TranslationRecord]:
+        with self._connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT * FROM translations WHERE document_id = ?
+                ORDER BY translated_at, translation_id
+                """,
+                (document_id,),
+            ).fetchall()
+        return [self._translation_from_row(row) for row in rows]
+
+    @staticmethod
+    def _duplicate_relationship_from_row(row: sqlite3.Row) -> DuplicateRelationship:
+        return DuplicateRelationship(
+            relationship_id=row["relationship_id"],
+            document_id=row["document_id"],
+            related_document_id=row["related_document_id"],
+            relationship_type=row["relationship_type"],
+            similarity=row["similarity"],
+            review_status=row["review_status"],
+            review_decision=row["review_decision"],
+            reviewed_by=row["reviewed_by"],
+            reviewed_at=row["reviewed_at"],
+            rationale=row["rationale"],
+            created_at=row["created_at"],
+        )
+
+    def get_duplicate_relationship(
+        self, relationship_id: str
+    ) -> DuplicateRelationship:
+        with self._connect() as connection:
+            row = connection.execute(
+                """
+                SELECT relationship.*,
+                    review.decision AS review_decision,
+                    review.reviewed_by,
+                    review.reviewed_at,
+                    review.rationale,
+                    CASE WHEN review.review_id IS NULL
+                         THEN 'PENDING' ELSE 'REVIEWED' END AS review_status
+                FROM duplicate_relationships AS relationship
+                LEFT JOIN duplicate_reviews AS review
+                    ON review.review_id = (
+                        SELECT latest.review_id
+                        FROM duplicate_reviews AS latest
+                        WHERE latest.relationship_id = relationship.relationship_id
+                        ORDER BY latest.rowid DESC
+                        LIMIT 1
+                    )
+                WHERE relationship.relationship_id = ?
+                """,
+                (relationship_id,),
+            ).fetchone()
+        if row is None:
+            raise StorageError(f"Duplicate relationship {relationship_id} was not found.")
+        return self._duplicate_relationship_from_row(row)
+
+    def duplicate_relationships(
+        self,
+        *,
+        document_id: str | None = None,
+        review_status: str | None = None,
+    ) -> list[DuplicateRelationship]:
+        if review_status not in {None, "PENDING", "REVIEWED"}:
+            raise ValueError("review_status must be PENDING or REVIEWED.")
+        with self._connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT relationship.*,
+                    review.decision AS review_decision,
+                    review.reviewed_by,
+                    review.reviewed_at,
+                    review.rationale,
+                    CASE WHEN review.review_id IS NULL
+                         THEN 'PENDING' ELSE 'REVIEWED' END AS review_status
+                FROM duplicate_relationships AS relationship
+                LEFT JOIN duplicate_reviews AS review
+                    ON review.review_id = (
+                        SELECT latest.review_id
+                        FROM duplicate_reviews AS latest
+                        WHERE latest.relationship_id = relationship.relationship_id
+                        ORDER BY latest.rowid DESC
+                        LIMIT 1
+                    )
+                WHERE (? IS NULL
+                    OR relationship.document_id = ?
+                    OR relationship.related_document_id = ?)
+                  AND (? IS NULL
+                    OR (? = 'PENDING' AND review.review_id IS NULL)
+                    OR (? = 'REVIEWED' AND review.review_id IS NOT NULL))
+                ORDER BY relationship.created_at, relationship.relationship_id
+                """,
+                (
+                    document_id,
+                    document_id,
+                    document_id,
+                    review_status,
+                    review_status,
+                    review_status,
+                ),
+            ).fetchall()
+        return [self._duplicate_relationship_from_row(row) for row in rows]
+
+    def review_duplicate_relationship(
+        self,
+        *,
+        relationship_id: str,
+        decision: str,
+        reviewed_by: str,
+        reviewed_at: str,
+        rationale: str,
+    ) -> DuplicateRelationship:
+        decisions = {
+            "CONFIRMED_DEPENDENT",
+            "INDEPENDENT_EVIDENCE_DOCUMENTED",
+            "REJECTED",
+            "UNRESOLVED",
+        }
+        if decision not in decisions:
+            raise StorageError(f"Unsupported duplicate review decision: {decision}.")
+        if not reviewed_by.strip() or not rationale.strip():
+            raise StorageError("Duplicate review needs a reviewer and rationale.")
+        if _RFC3339_TIMESTAMP.fullmatch(reviewed_at) is None:
+            raise StorageError("reviewed_at must be an RFC3339 timestamp with a timezone.")
+        try:
+            timestamp = datetime.fromisoformat(reviewed_at.replace("Z", "+00:00"))
+        except ValueError as error:
+            raise StorageError("reviewed_at must be a valid RFC3339 timestamp.") from error
+        if timestamp.tzinfo is None or timestamp.utcoffset() is None:
+            raise StorageError("reviewed_at must include a timezone.")
+        review_id = uuid.uuid4().hex
+        with self._lock, self._write_transaction() as connection:
+            exists = connection.execute(
+                "SELECT 1 FROM duplicate_relationships WHERE relationship_id = ?",
+                (relationship_id,),
+            ).fetchone()
+            if exists is None:
+                raise StorageError(
+                    f"Duplicate relationship {relationship_id} was not found."
+                )
+            connection.execute(
+                """
+                INSERT INTO duplicate_reviews (
+                    review_id, relationship_id, decision, reviewed_by,
+                    reviewed_at, rationale
+                ) VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    review_id,
+                    relationship_id,
+                    decision,
+                    reviewed_by.strip(),
+                    reviewed_at,
+                    rationale.strip(),
+                ),
+            )
+        return self.get_duplicate_relationship(relationship_id)
 
     def get_raw_snapshot(self, content_ref: str) -> RawSnapshot:
         if not content_ref.startswith("sha256:"):

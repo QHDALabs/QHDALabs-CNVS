@@ -158,6 +158,62 @@ class CollectionResult:
     error_message: str | None
 
 
+@dataclass(frozen=True)
+class NormalizedDocument:
+    document_id: str
+    collection_id: str
+    source_id: str
+    item_index: int
+    origin_identifier: str
+    original_title: str
+    normalized_title: str
+    original_text: str
+    normalized_text: str
+    original_url: str | None
+    normalized_url: str | None
+    publisher_original: str
+    publisher_normalized: str
+    language: str
+    language_source: str
+    language_review_status: str
+    registry_language: str | None
+    declared_language: str | None
+    original_published_at: str | None
+    normalized_published_at: str | None
+    publication_timezone_known: bool
+    text_sha256: str
+    normalized_text_sha256: str
+    created_at: str
+
+
+@dataclass(frozen=True)
+class TranslationRecord:
+    translation_id: str
+    document_id: str
+    source_text_sha256: str
+    source_language: str
+    target_language: str
+    translated_text: str
+    translation_method: str
+    translator: str
+    translated_at: str
+
+
+@dataclass(frozen=True)
+class DuplicateRelationship:
+    relationship_id: str
+    document_id: str
+    related_document_id: str
+    relationship_type: str
+    similarity: float
+    review_status: str
+    review_decision: str | None
+    reviewed_by: str | None
+    reviewed_at: str | None
+    rationale: str | None
+    created_at: str
+
+
 CanonicalRecord: TypeAlias = Event | Source | Claim | Evidence | Assessment
 RECORD_TYPES: dict[str, type[CanonicalRecord]] = {
     model.record_type: model
