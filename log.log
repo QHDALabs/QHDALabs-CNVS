@@ -225,7 +225,7 @@ no diagnostics in changed Python files.
 
 Stage 7 — Extract claims and attribution as derived records
 ----------------------------------------------------------
-Status: TODO
+Status: DONE
 Tasks:
 - Extract candidate claims, subjects, predicates, objects, modality and
   attribution from source material.
@@ -240,6 +240,19 @@ Done when:
 - Claims are never detached from their source.
 - Analyst review can correct or reject extracted claims.
 - No automated extraction is represented as primary evidence or confirmed fact.
+Outcome: Added source-grounded derived claim candidates imported from analyst-
+or tool-produced JSON, tied to an explicitly LINKED event/source document,
+source-text SHA-256 and exact character-indexed quote. Candidate batches are
+validated atomically; SQLite also rejects fabricated source or span
+provenance. Append-only ACCEPTED/REJECTED/CORRECTED/UNRESOLVED reviews record
+reviewer and rationale, and corrections are retained against the same source
+text without rewriting candidates or promoting them to canonical claims.
+No automatic NLP/LLM extractor is included; ACCEPTED is extraction review,
+not truth verification.
+Validation: All 76 tests pass on Python 3.14 and Python 3.12. The wheel
+includes 005_claim_extractions.sql and the installed CLI applies all five
+migrations. Configuration validation passes; Pylance reports no errors in
+changed Python files.
 
 Stage 8 — Implement provenance graph and independence groups
 ------------------------------------------------------------

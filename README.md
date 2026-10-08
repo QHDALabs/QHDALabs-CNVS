@@ -9,10 +9,10 @@ independent.
 > **Status: early MVP implementation.** The CLI can validate the reviewed
 > configuration, manage a local SQLite database, collect approved public RSS
 > feeds and URLs, create versioned event records, review source-to-event
-> matches, and maintain auditable event timelines. The checked-in source
-> registry contains only a disabled synthetic example: no live source has
-> been reviewed or approved. CNVS is not a verification engine or full analyst
-> application.
+> matches, maintain auditable event timelines, and record source-grounded
+> derived claim candidates for analyst review. The checked-in source registry
+> contains only a disabled synthetic example: no live source has been reviewed
+> or approved. CNVS is not a verification engine or full analyst application.
 
 ## Guiding principles
 
@@ -108,11 +108,13 @@ collects approved public RSS/URL sources, preserves normalized document text
 and provenance, records translations, and surfaces duplicate/syndication
 candidates for analyst review. It also supports creating and revising event
 records, proposing and reviewing source-document matches, and auditing
-chronology corrections. Candidate matches remain unresolved until explicitly
-reviewed; events and sources are never silently merged. Claim extraction,
-cross-national analysis and operational report generation are not implemented.
-See [docs/DEVELOPMENT.md](./docs/DEVELOPMENT.md) for platform-specific setup
-and environment variable details.
+chronology corrections, and recording/reviewing source-grounded derived claim
+candidates. Candidate matches remain unresolved until explicitly reviewed;
+events and sources are never silently merged. CNVS does not run an automatic
+NLP/LLM extractor, and accepted extraction candidates are not canonical claims
+or confirmed facts. Cross-national analysis and operational report generation
+are not implemented. See [docs/DEVELOPMENT.md](./docs/DEVELOPMENT.md) for
+platform-specific setup and environment variable details.
 
 ## Configuration
 
@@ -140,6 +142,10 @@ python -m cnvs event matches --status PENDING
 python -m cnvs event match-history MATCH-ID
 python -m cnvs event review-match MATCH-ID --decision LINKED --reviewer reviewer --rationale "Manually corroborated"
 python -m cnvs event timeline CNVS-EVT-2026-10-08-0001
+python -m cnvs claim extract CNVS-EVT-2026-10-08-0001 DOCUMENT-ID --file candidates.json --method "analyst-assisted JSON import" --extractor analyst
+python -m cnvs claim list --event-id CNVS-EVT-2026-10-08-0001 --status PENDING
+python -m cnvs claim review CANDIDATE-ID --decision ACCEPTED --reviewer reviewer --rationale "Fields match the attributed source statement"
+python -m cnvs claim history CANDIDATE-ID
 ```
 
 Normalization requires a retained source snapshot, so it is unavailable when
@@ -155,6 +161,17 @@ recorded or corrected separately from the source's publication and collection
 times. Corrections append a rationale-bearing revision rather than rewriting
 history. See [docs/DATA_MODEL.md](./docs/DATA_MODEL.md) and
 [docs/DEVELOPMENT.md](./docs/DEVELOPMENT.md) for details.
+
+Claim extraction candidates can be imported from JSON only after a source
+document has an explicitly `LINKED` event match. Each candidate stores the
+document/source IDs, source-text SHA-256, exact character offsets and quoted
+span, structured claim fields, extraction method and extractor. `claim review`
+appends an `ACCEPTED`, `REJECTED`, `CORRECTED` or `UNRESOLVED` decision with a
+reviewer and rationale; a correction is checked against the retained source
+text. `ACCEPTED` means the candidate structure and attribution were reviewed,
+not that the proposition is true. These remain derived candidates and are not
+promoted into canonical claims or evidence. There is no automatic NLP/LLM
+extraction; imported source text is treated as untrusted data.
 
 ## Validation
 
@@ -173,6 +190,7 @@ normalization and preserved text/timestamp values, language uncertainty,
 translation provenance, exact and likely duplicate relationships, immutable
 normalized records, event lifecycle and reviewable source matching, distinct
 event/publication/collection times, timeline corrections and their history,
+source-grounded claim candidate spans, corrections and append-only reviews,
 checksummed migrations, record revision history, source snapshots and
 assessment reconstruction. They do not validate live source availability,
 source rights, analyst conclusions or source approvals.

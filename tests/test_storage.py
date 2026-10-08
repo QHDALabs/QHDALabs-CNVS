@@ -100,9 +100,10 @@ class DatabaseTests(unittest.TestCase):
                 "002_collection_attempts",
                 "003_normalized_documents",
                 "004_event_timelines",
+                "005_claim_extractions",
             ],
         )
-        self.assertEqual(self.database.migrate(), 4)
+        self.assertEqual(self.database.migrate(), 5)
 
         reopened = Database(self.database_path)
         self.assertEqual(reopened.migration_status(), self.database.migration_status())
@@ -331,7 +332,7 @@ class DatabaseTests(unittest.TestCase):
         with contextlib.redirect_stdout(output):
             result = main(["db", "migrate", "--database", str(self.database_path)])
         self.assertEqual(result, 0)
-        self.assertIn("4 migration(s) applied", output.getvalue())
+        self.assertIn("5 migration(s) applied", output.getvalue())
 
         output = io.StringIO()
         with contextlib.redirect_stdout(output):
@@ -341,6 +342,7 @@ class DatabaseTests(unittest.TestCase):
         self.assertIn("002_collection_attempts applied at", output.getvalue())
         self.assertIn("003_normalized_documents applied at", output.getvalue())
         self.assertIn("004_event_timelines applied at", output.getvalue())
+        self.assertIn("005_claim_extractions applied at", output.getvalue())
 
     def test_database_cli_reports_database_open_failures_without_traceback(self):
         output = io.StringIO()

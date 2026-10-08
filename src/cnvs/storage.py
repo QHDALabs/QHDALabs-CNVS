@@ -15,6 +15,7 @@ from cnvs.models import (
     Assessment,
     CanonicalRecord,
     Claim,
+    ClaimExtraction,
     CollectionResult,
     Evidence,
     DuplicateRelationship,
@@ -1353,6 +1354,397 @@ class Database:
                 ),
             )
         return self.timeline_entry_history(entry_id)[-1]
+
+    @staticmethod
+    def _claim_extraction_from_row(row: sqlite3.Row) -> ClaimExtraction:
+        available_columns = set(row.keys())
+        decision = (
+            row["review_decision"]
+            if "review_decision" in available_columns
+            else None
+        )
+        correction = (
+            row["correction_json"]
+            if "correction_json" in available_columns
+            else None
+        )
+        return ClaimExtraction(
+            candidate_id=row["candidate_id"],
+            event_id=row["event_id"],
+            document_id=row["document_id"],
+            source_id=row["source_id"],
+            source_text_sha256=row["source_text_sha256"],
+            span_start=row["span_start"],
+            span_end=row["span_end"],
+            span_text=row["span_text"],
+            subject=row["subject"],
+            predicate=row["predicate"],
+            object=row["object"],
+            claim_type=row["claim_type"],
+            attribution=row["attribution"],
+            modality=row["modality"],
+            extraction_method=row["extraction_method"],
+            extractor=row["extractor"],
+            created_at=row["created_at"],
+            review_status=decision or "PENDING",
+            review_decision=decision,
+            reviewed_by=(
+                row["reviewed_by"] if "reviewed_by" in available_columns else None
+            ),
+            reviewed_at=(
+                row["reviewed_at"] if "reviewed_at" in available_columns else None
+            ),
+            review_rationale=(
+                row["review_rationale"]
+                if "review_rationale" in available_columns
+                else None
+            ),
+            correction_payload=json.loads(correction) if correction else None,
+        )
+
+    @staticmethod
+    def _claim_extraction_select() -> str:
+        return """
+            SELECT candidate.*,
+                review.decision AS review_decision,
+                review.reviewed_by,
+                review.reviewed_at,
+                review.rationale AS review_rationale,
+                correction.correction_json
+            FROM claim_extractions AS candidate
+            LEFT JOIN claim_extraction_reviews AS review
+                ON review.review_id = (
+                    SELECT latest.review_id
+                    FROM claim_extraction_reviews AS latest
+                    WHERE latest.candidate_id = candidate.candidate_id
+                    ORDER BY latest.rowid DESC
+                    LIMIT 1
+                )
+            LEFT JOIN claim_extraction_reviews AS correction
+                ON correction.review_id = (
+                    SELECT latest_correction.review_id
+                    FROM claim_extraction_reviews AS latest_correction
+                    WHERE latest_correction.candidate_id = candidate.candidate_id
+                      AND latest_correction.decision = 'CORRECTED'
+                    ORDER BY latest_correction.rowid DESC
+                    LIMIT 1
+                )
+        """
+
+    @staticmethod
+    def _validate_claim_extraction_fields(
+        fields: dict[str, JsonValue], source_text: str
+    ) -> dict[str, JsonValue]:
+        expected = {
+            "span_start",
+            "span_end",
+            "subject",
+            "predicate",
+            "object",
+            "claim_type",
+            "attribution",
+            "modality",
+        }
+        if set(fields) != expected:
+            missing = ", ".join(sorted(expected - set(fields)))
+            extra = ", ".join(sorted(set(fields) - expected))
+            details = []
+            if missing:
+                details.append(f"missing: {missing}")
+            if extra:
+                details.append(f"unsupported: {extra}")
+            raise StorageError(
+                "Claim extraction fields are invalid (" + "; ".join(details) + ")."
+            )
+        start = fields["span_start"]
+        end = fields["span_end"]
+        if (
+            isinstance(start, bool)
+            or not isinstance(start, int)
+            or isinstance(end, bool)
+            or not isinstance(end, int)
+            or start < 0
+            or end <= start
+            or end > len(source_text)
+        ):
+            raise StorageError("Claim source span offsets are outside the source text.")
+        if not source_text[start:end].strip():
+            raise StorageError("Claim source span must contain non-whitespace text.")
+        for field_name in (
+            "subject",
+            "predicate",
+            "object",
+            "claim_type",
+            "modality",
+        ):
+            value = fields[field_name]
+            if not isinstance(value, str) or not value.strip():
+                raise StorageError(f"Claim extraction {field_name} must not be empty.")
+        attribution = fields["attribution"]
+        if attribution is not None and (
+            not isinstance(attribution, str) or not attribution.strip()
+        ):
+            raise StorageError(
+                "Claim extraction attribution must be a non-empty string or null."
+            )
+        return fields
+
+    def create_claim_extractions(
+        self,
+        *,
+        event_id: str,
+        document_id: str,
+        candidates: list[dict[str, JsonValue]],
+        extraction_method: str,
+        extractor: str,
+        created_at: str,
+    ) -> list[ClaimExtraction]:
+        if not candidates:
+            raise StorageError("At least one claim extraction candidate is required.")
+        if not extraction_method.strip() or not extractor.strip():
+            raise StorageError("Claim extraction method and extractor must be recorded.")
+        _validate_timestamp(created_at, "created_at")
+        candidate_ids = [uuid.uuid4().hex for _ in candidates]
+        with self._lock, self._write_transaction() as connection:
+            self._require_record(connection, "event", event_id)
+            document = connection.execute(
+                """
+                SELECT source_id, original_text, text_sha256
+                FROM normalized_documents WHERE document_id = ?
+                """,
+                (document_id,),
+            ).fetchone()
+            if document is None:
+                raise StorageError(f"Normalized document {document_id} was not found.")
+            source_text = document["original_text"]
+            source_digest = hashlib.sha256(source_text.encode("utf-8")).hexdigest()
+            if source_digest != document["text_sha256"]:
+                raise StorageError(
+                    f"Normalized document {document_id} failed source-text integrity validation."
+                )
+            match = connection.execute(
+                self._event_source_match_select()
+                + """
+                    WHERE match.event_id = ? AND match.document_id = ?
+                """,
+                (event_id, document_id),
+            ).fetchone()
+            if (
+                match is None
+                or self._event_source_match_from_row(match).status != "LINKED"
+            ):
+                raise StorageError(
+                    "Claim extraction requires an explicitly confirmed event/source match."
+                )
+            for candidate_id, raw_fields in zip(candidate_ids, candidates):
+                fields = self._validate_claim_extraction_fields(
+                    raw_fields, source_text
+                )
+                span_start = fields["span_start"]
+                span_end = fields["span_end"]
+                connection.execute(
+                    """
+                    INSERT INTO claim_extractions (
+                        candidate_id, event_id, document_id, source_id,
+                        source_text_sha256, span_start, span_end, span_text,
+                        subject, predicate, object, claim_type, attribution,
+                        modality, extraction_method, extractor, created_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        candidate_id,
+                        event_id,
+                        document_id,
+                        document["source_id"],
+                        source_digest,
+                        span_start,
+                        span_end,
+                        source_text[span_start:span_end],
+                        fields["subject"].strip(),
+                        fields["predicate"].strip(),
+                        fields["object"].strip(),
+                        fields["claim_type"].strip(),
+                        (
+                            fields["attribution"].strip()
+                            if isinstance(fields["attribution"], str)
+                            else None
+                        ),
+                        fields["modality"].strip(),
+                        extraction_method.strip(),
+                        extractor.strip(),
+                        created_at,
+                    ),
+                )
+            rows = connection.execute(
+                self._claim_extraction_select()
+                + " WHERE candidate.candidate_id IN ("
+                + ",".join("?" for _ in candidate_ids)
+                + ") ORDER BY candidate.created_at, candidate.candidate_id",
+                candidate_ids,
+            ).fetchall()
+        return [self._claim_extraction_from_row(row) for row in rows]
+
+    def claim_extractions(
+        self,
+        *,
+        event_id: str | None = None,
+        document_id: str | None = None,
+        review_status: str | None = None,
+    ) -> list[ClaimExtraction]:
+        allowed = {
+            None,
+            "PENDING",
+            "ACCEPTED",
+            "REJECTED",
+            "CORRECTED",
+            "UNRESOLVED",
+        }
+        if review_status not in allowed:
+            raise ValueError("Unsupported claim extraction review status.")
+        query = self._claim_extraction_select() + """
+            WHERE (? IS NULL OR candidate.event_id = ?)
+              AND (? IS NULL OR candidate.document_id = ?)
+              AND (? IS NULL OR COALESCE(review.decision, 'PENDING') = ?)
+            ORDER BY candidate.created_at, candidate.candidate_id
+        """
+        with self._connect() as connection:
+            rows = connection.execute(
+                query,
+                (
+                    event_id,
+                    event_id,
+                    document_id,
+                    document_id,
+                    review_status,
+                    review_status,
+                ),
+            ).fetchall()
+        return [self._claim_extraction_from_row(row) for row in rows]
+
+    def claim_extraction_history(
+        self, candidate_id: str
+    ) -> list[ClaimExtraction]:
+        with self._connect() as connection:
+            candidate = connection.execute(
+                """
+                SELECT * FROM claim_extractions WHERE candidate_id = ?
+                """,
+                (candidate_id,),
+            ).fetchone()
+            if candidate is None:
+                raise StorageError(
+                    f"Claim extraction candidate {candidate_id} was not found."
+                )
+            reviews = connection.execute(
+                """
+                SELECT decision, reviewed_by, reviewed_at, rationale,
+                    correction_json
+                FROM claim_extraction_reviews
+                WHERE candidate_id = ?
+                ORDER BY rowid
+                """,
+                (candidate_id,),
+            ).fetchall()
+        initial = self._claim_extraction_from_row(candidate)
+        return [
+            initial,
+            *(
+                ClaimExtraction(
+                    **{
+                        **{
+                            field: getattr(initial, field)
+                            for field in initial.__dataclass_fields__
+                        },
+                        "review_status": review["decision"],
+                        "review_decision": review["decision"],
+                        "reviewed_by": review["reviewed_by"],
+                        "reviewed_at": review["reviewed_at"],
+                        "review_rationale": review["rationale"],
+                        "correction_payload": (
+                            json.loads(review["correction_json"])
+                            if review["correction_json"]
+                            else None
+                        ),
+                    }
+                )
+                for review in reviews
+            ),
+        ]
+
+    def review_claim_extraction(
+        self,
+        *,
+        candidate_id: str,
+        decision: str,
+        reviewed_by: str,
+        reviewed_at: str,
+        rationale: str,
+        correction: dict[str, JsonValue] | None = None,
+    ) -> ClaimExtraction:
+        decisions = {"ACCEPTED", "REJECTED", "CORRECTED", "UNRESOLVED"}
+        if decision not in decisions:
+            raise StorageError(f"Unsupported claim extraction decision: {decision}.")
+        if not reviewed_by.strip() or not rationale.strip():
+            raise StorageError("Claim review requires a reviewer and rationale.")
+        _validate_timestamp(reviewed_at, "reviewed_at")
+        if (decision == "CORRECTED") != (correction is not None):
+            raise StorageError(
+                "A corrected review must include corrected claim fields; other "
+                "decisions must not."
+            )
+        review_id = uuid.uuid4().hex
+        with self._lock, self._write_transaction() as connection:
+            candidate = connection.execute(
+                "SELECT * FROM claim_extractions WHERE candidate_id = ?",
+                (candidate_id,),
+            ).fetchone()
+            if candidate is None:
+                raise StorageError(
+                    f"Claim extraction candidate {candidate_id} was not found."
+                )
+            source_document = connection.execute(
+                """
+                SELECT original_text, text_sha256
+                FROM normalized_documents WHERE document_id = ?
+                """,
+                (candidate["document_id"],),
+            ).fetchone()
+            if (
+                source_document is None
+                or source_document["text_sha256"] != candidate["source_text_sha256"]
+            ):
+                raise StorageError(
+                    f"Claim extraction {candidate_id} no longer matches its source text."
+                )
+            correction_json = None
+            if correction is not None:
+                validated_correction = self._validate_claim_extraction_fields(
+                    correction, source_document["original_text"]
+                )
+                correction_json = _json_text(validated_correction)
+            connection.execute(
+                """
+                INSERT INTO claim_extraction_reviews (
+                    review_id, candidate_id, decision, reviewed_by, reviewed_at,
+                    rationale, correction_json
+                ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    review_id,
+                    candidate_id,
+                    decision,
+                    reviewed_by.strip(),
+                    reviewed_at,
+                    rationale.strip(),
+                    correction_json,
+                ),
+            )
+        candidates = self.claim_extractions()
+        return next(
+            candidate
+            for candidate in candidates
+            if candidate.candidate_id == candidate_id
+        )
 
     def add_translation(
         self,

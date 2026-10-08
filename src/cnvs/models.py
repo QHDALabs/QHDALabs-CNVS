@@ -250,6 +250,33 @@ class TimelineEntry:
     source_url: str | None
 
 
+@dataclass(frozen=True)
+class ClaimExtraction:
+    candidate_id: str
+    event_id: str
+    document_id: str
+    source_id: str
+    source_text_sha256: str
+    span_start: int
+    span_end: int
+    span_text: str
+    subject: str
+    predicate: str
+    object: str
+    claim_type: str
+    attribution: str | None
+    modality: str
+    extraction_method: str
+    extractor: str
+    created_at: str
+    review_status: str
+    review_decision: str | None
+    reviewed_by: str | None
+    reviewed_at: str | None
+    review_rationale: str | None
+    correction_payload: dict[str, JsonValue] | None
+
+
 CanonicalRecord: TypeAlias = Event | Source | Claim | Evidence | Assessment
 RECORD_TYPES: dict[str, type[CanonicalRecord]] = {
     model.record_type: model

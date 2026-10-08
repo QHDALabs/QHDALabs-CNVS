@@ -11,6 +11,7 @@ from cnvs.collection import collect_source, find_registration, retry_collection
 from cnvs.configuration import ConfigurationError, validate_configuration
 from cnvs.models import (
     CollectionResult,
+    ClaimExtraction,
     DuplicateRelationship,
     Event,
     EventSourceMatch,
@@ -218,6 +219,53 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     timeline_history.add_argument("entry_id")
     timeline_history.add_argument("--database", help="SQLite database file.")
+
+    claim_parser = commands.add_parser(
+        "claim", help="Review source-grounded derived claim extractions."
+    )
+    claim_commands = claim_parser.add_subparsers(
+        dest="claim_command", required=True
+    )
+    claim_extract = claim_commands.add_parser(
+        "extract",
+        help="Validate and store analyst/tool-supplied candidate claims from JSON.",
+    )
+    claim_extract.add_argument("event_id")
+    claim_extract.add_argument("document_id")
+    claim_extract.add_argument("--file", required=True)
+    claim_extract.add_argument("--method", required=True)
+    claim_extract.add_argument("--extractor", required=True)
+    claim_extract.add_argument("--created-at")
+    claim_extract.add_argument("--database", help="SQLite database file.")
+    claim_list = claim_commands.add_parser(
+        "list", help="List derived claim candidates and review states."
+    )
+    claim_list.add_argument("--event-id")
+    claim_list.add_argument("--document-id")
+    claim_list.add_argument(
+        "--status",
+        choices=("PENDING", "ACCEPTED", "REJECTED", "CORRECTED", "UNRESOLVED"),
+    )
+    claim_list.add_argument("--database", help="SQLite database file.")
+    claim_review = claim_commands.add_parser(
+        "review", help="Accept, correct, reject or defer a derived claim candidate."
+    )
+    claim_review.add_argument("candidate_id")
+    claim_review.add_argument(
+        "--decision",
+        required=True,
+        choices=("ACCEPTED", "REJECTED", "CORRECTED", "UNRESOLVED"),
+    )
+    claim_review.add_argument("--reviewer", required=True)
+    claim_review.add_argument("--rationale", required=True)
+    claim_review.add_argument("--correction-file")
+    claim_review.add_argument("--reviewed-at")
+    claim_review.add_argument("--database", help="SQLite database file.")
+    claim_history = claim_commands.add_parser(
+        "history", help="Show a claim candidate and its append-only review history."
+    )
+    claim_history.add_argument("candidate_id")
+    claim_history.add_argument("--database", help="SQLite database file.")
     return parser
 
 
@@ -371,6 +419,36 @@ def _print_timeline_entry(entry: TimelineEntry) -> None:
     )
 
 
+def _print_claim_extraction(candidate: ClaimExtraction) -> None:
+    print(
+        f"{candidate.candidate_id} event={candidate.event_id} "
+        f"document={candidate.document_id} source={candidate.source_id} "
+        f"review={candidate.review_status}"
+    )
+    print(
+        f"  subject={candidate.subject!r} predicate={candidate.predicate!r} "
+        f"object={candidate.object!r} type={candidate.claim_type} "
+        f"modality={candidate.modality} attribution={candidate.attribution!r}"
+    )
+    print(
+        f"  source_text_sha256={candidate.source_text_sha256} "
+        f"span=[{candidate.span_start}:{candidate.span_end}] "
+        f"quote={candidate.span_text!r}"
+    )
+    print(
+        f"  extraction_method={candidate.extraction_method} "
+        f"extractor={candidate.extractor} created_at={candidate.created_at}"
+    )
+    if candidate.review_decision is not None:
+        print(
+            f"  decision={candidate.review_decision} reviewer={candidate.reviewed_by} "
+            f"reviewed_at={candidate.reviewed_at} "
+            f"rationale={candidate.review_rationale!r}"
+        )
+    if candidate.correction_payload is not None:
+        print(f"  latest_correction={candidate.correction_payload}")
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     parser = _build_parser()
     args = parser.parse_args(argv)
@@ -502,6 +580,79 @@ def main(argv: Sequence[str] | None = None) -> int:
                 return 0
             for entry in database.timeline_entry_history(args.entry_id):
                 _print_timeline_entry(entry)
+            return 0
+
+        if args.command == "claim":
+            settings = Settings.from_environment(
+                database_path_override=args.database
+            )
+            database = Database(settings.database_path)
+            if args.claim_command == "extract":
+                payload = json.loads(
+                    Path(args.file).expanduser().read_text(encoding="utf-8")
+                )
+                if not isinstance(payload, list) or any(
+                    not isinstance(candidate, dict) for candidate in payload
+                ):
+                    raise ValueError(
+                        "Claim extraction input must be a JSON array of candidate objects."
+                    )
+                created_at = args.created_at or (
+                    datetime.now(timezone.utc)
+                    .isoformat(timespec="seconds")
+                    .replace("+00:00", "Z")
+                )
+                candidates = database.create_claim_extractions(
+                    event_id=args.event_id,
+                    document_id=args.document_id,
+                    candidates=payload,
+                    extraction_method=args.method,
+                    extractor=args.extractor,
+                    created_at=created_at,
+                )
+                print(f"Stored {len(candidates)} derived claim candidate(s).")
+                for candidate in candidates:
+                    _print_claim_extraction(candidate)
+                return 0
+            if args.claim_command == "list":
+                candidates = database.claim_extractions(
+                    event_id=args.event_id,
+                    document_id=args.document_id,
+                    review_status=args.status,
+                )
+                if not candidates:
+                    print("No claim extraction candidates found.")
+                for candidate in candidates:
+                    _print_claim_extraction(candidate)
+                return 0
+            if args.claim_command == "review":
+                correction = None
+                if args.correction_file:
+                    correction = json.loads(
+                        Path(args.correction_file)
+                        .expanduser()
+                        .read_text(encoding="utf-8")
+                    )
+                    if not isinstance(correction, dict):
+                        raise ValueError("Correction input must be a JSON object.")
+                reviewed_at = args.reviewed_at or (
+                    datetime.now(timezone.utc)
+                    .isoformat(timespec="seconds")
+                    .replace("+00:00", "Z")
+                )
+                candidate = database.review_claim_extraction(
+                    candidate_id=args.candidate_id,
+                    decision=args.decision,
+                    reviewed_by=args.reviewer,
+                    reviewed_at=reviewed_at,
+                    rationale=args.rationale,
+                    correction=correction,
+                )
+                _print_claim_extraction(candidate)
+                return 0
+            history = database.claim_extraction_history(args.candidate_id)
+            for candidate in history:
+                _print_claim_extraction(candidate)
             return 0
 
         if args.command == "source":

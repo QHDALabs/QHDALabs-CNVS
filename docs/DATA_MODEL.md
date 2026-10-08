@@ -165,3 +165,30 @@ keeps these values independent:
 The timeline orders entries using event time when available, otherwise the
 best available publication time, then collection time. It does not substitute
 publication or collection timestamps for an unknown occurrence time.
+
+## Derived claim extraction and review
+
+Stage 7 stores claim extraction candidates separately from canonical `Claim`
+records. A candidate is allowed only for an existing event and normalized
+document whose event/source match has been explicitly reviewed as `LINKED`.
+Each immutable candidate records its event, document and source IDs, SHA-256
+of the document's original text, Python-character offsets into that text,
+the exact quoted span, subject, predicate, object, claim type, attribution,
+modality, extraction method, extractor and creation time. The digest and span
+are checked against the retained document at insertion; invalid batches fail
+atomically.
+
+Candidate reviews are append-only and include reviewer, time and rationale.
+`ACCEPTED`, `REJECTED`, `CORRECTED` and `UNRESOLVED` describe the extraction
+review state, not whether a proposition is true. A correction is a complete
+structured candidate payload whose span is validated against the same
+source-text snapshot; it is retained in the review history without rewriting
+the original candidate. A later review can supersede the displayed current
+decision while preserving the full history.
+
+The CLI imports analyst- or tool-produced JSON candidates; there is no
+automatic NLP/LLM extraction. Source text is untrusted data and is not sent to
+a model by this workflow. An accepted or corrected candidate is still derived
+material: this stage does not promote it to a canonical claim, create
+evidence, verify its truth, or determine source independence. Those records
+and decisions require subsequent workflow stages.

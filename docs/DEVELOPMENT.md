@@ -1,9 +1,10 @@
 # Development setup
 
 The Python CLI validates the reviewed MVP configuration, manages local SQLite
-persistence, and supports explicitly approved public RSS/URL collection.
-Automated event analysis, report generation, authentication and an API are not
-implemented.
+persistence, supports explicitly approved public RSS/URL collection, and
+records source-grounded claim extraction candidates for analyst review.
+Automatic NLP/LLM extraction, automated event analysis, report generation,
+authentication and an API are not implemented.
 
 ## Requirements
 
@@ -81,6 +82,10 @@ cnvs event timeline CNVS-EVT-2026-10-08-0001
 cnvs event timeline-edit ENTRY-ID --event-time 2026-10-07T08:15:00Z --analyst analyst --rationale "Primary notice confirms occurrence time"
 cnvs event timeline-edit ENTRY-ID --clear-event-time --analyst analyst --rationale "Previously recorded time was publication time"
 cnvs event timeline-history ENTRY-ID
+cnvs claim extract CNVS-EVT-2026-10-08-0001 DOCUMENT-ID --file candidates.json --method "analyst-assisted JSON import" --extractor analyst
+cnvs claim list --event-id CNVS-EVT-2026-10-08-0001 --status PENDING
+cnvs claim review CANDIDATE-ID --decision CORRECTED --reviewer analyst --rationale "Refined extraction" --correction-file corrected-candidate.json
+cnvs claim history CANDIDATE-ID
 ```
 
 Configuration directory resolution is:
@@ -185,7 +190,7 @@ revision; `event timeline-history` displays the audit trail. The system does
 not infer an occurrence time from publication or collection time.
 
 ## Local database
-Stages 3-6 use SQLite and apply checksummed migrations automatically when the
+Stages 3-7 use SQLite and apply checksummed migrations automatically when the
 database is opened. The default database path is `.data/cnvs.sqlite3`; override
 it with `CNVS_DATABASE_PATH` or `--database` on a database command:
 
@@ -205,9 +210,45 @@ Canonical JSON Schema records are validated before storage, and database
 revisions preserve prior record payloads. Raw snapshots are content-addressed;
 collection attempts, normalized documents, translations, duplicate matches
 and duplicate-review decisions, event/source match proposals and reviews, and
-event timeline revisions are append-only. `cnvs db status` shows the applied
-schema migrations; changed migration files are rejected and require a new
-migration instead.
+event timeline revisions, claim extraction candidates and claim reviews are
+append-only. `cnvs db status` shows the applied schema migrations; changed
+migration files are rejected and require a new migration instead.
+
+### Claim extraction candidates
+
+First create and explicitly link the event to the normalized document using
+the event workflow above. `claim extract` imports a JSON array; each object
+must have exactly these fields:
+
+```json
+{
+  "span_start": 15,
+  "span_end": 39,
+  "subject": "the port",
+  "predicate": "remained",
+  "object": "closed",
+  "claim_type": "INCIDENT",
+  "attribution": "Officials",
+  "modality": "REPORTED"
+}
+```
+
+The offsets are zero-based Python string character offsets into the original
+extracted document text (end-exclusive), not byte offsets; the example span
+quotes `the port remained closed` from `Officials said the port remained
+closed.` The importer stores that exact quote and the source-text digest, and
+rejects out-of-range/empty spans or malformed fields. The entire batch is
+rolled back if a candidate is invalid. Provide `--method` and `--extractor`
+to preserve who/what generated the derived candidate.
+
+Review decisions are `ACCEPTED`, `REJECTED`, `CORRECTED` and `UNRESOLVED`;
+each requires a reviewer and rationale. `CORRECTED` requires a JSON object in
+the same field format, checked against the archived original text. Reviews
+append to an immutable history. `ACCEPTED` means the candidate's structure
+and attribution have been reviewed, not that its proposition is true.
+Corrections remain review payloads; candidates are not promoted to canonical
+claims or evidence. The CLI does not invoke a model, and imported text remains
+untrusted data.
 
 `CNVS_LOG_LEVEL` accepts `DEBUG`, `INFO`, `WARNING`, `ERROR` or `CRITICAL`;
 the default is `WARNING`. Environment values are read from the process
