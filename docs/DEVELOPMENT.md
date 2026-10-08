@@ -69,6 +69,7 @@ cnvs source collect SOURCE-ID
 cnvs source results
 cnvs source results --source-id SOURCE-ID
 cnvs source retry COLLECTION-ID
+cnvs source metrics
 cnvs source normalize COLLECTION-ID
 cnvs source documents --collection-id COLLECTION-ID
 cnvs source duplicates --status PENDING
@@ -185,8 +186,13 @@ and links. Each attempt has an immutable database result with status,
 timestamps, HTTP/media metadata, digest, failure details and optional snapshot
 reference, together with a snapshot of the registry metadata used for that
 attempt. `source retry` is manual and only accepts a failed latest attempt;
-blocked attempts require source/access review rather than retrying. Results
-remain inspectable even if the registry later changes.
+blocked attempts require source/access review rather than retrying. A source
+has at most three attempts total (one initial attempt and two manual retries).
+Use `source results` for an individual attempt and `source metrics` for
+aggregate collection and normalization outcomes. Structured JSON logs are
+written to stderr and omit source URLs and retrieved text; they are not a
+centrally protected audit or alerting service. Results remain inspectable even
+if the registry later changes.
 
 Set `archive_content: true` only when applicable access terms permit retaining
 the content and provide a `retention_basis`. When archiving is disabled, CNVS
@@ -277,6 +283,14 @@ event timeline revisions, claim extraction candidates and reviews, provenance
 links and reviews, origin assessments and independence assignments/reviews are
 append-only. `cnvs db status` shows the applied schema migrations; changed
 migration files are rejected and require a new migration instead.
+
+Archived RSS/Atom and HTML parsing runs in a spawned Python worker process.
+Normalization rejects inputs larger than 10 MiB and feeds with more than
+5,000 entries, and terminates parsing after 15 seconds. These controls are not
+a hard memory limit or a complete operating-system sandbox. Normalization
+outcomes are stored in append-only `processing_attempts`; `source metrics`
+shows aggregate status and error-code counts. These metrics do not implement
+authorization, retention, alerting or a production audit service.
 
 ### Claim extraction candidates
 

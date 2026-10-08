@@ -48,3 +48,23 @@ authorization boundary. The sample report in `examples/event-report.json`
 demonstrates the distinctions; it is synthetic and is not an operational
 assessment. Reports are for internal use; the CLI does not publish them
 externally.
+
+## Collection and processing failures
+
+Before interpreting an empty or partial set of source documents, inspect
+`cnvs source results` and `cnvs source metrics`. A failed or blocked collection
+is not evidence that the source had no relevant reporting. Review the recorded
+error and source access conditions before using either of the two permitted
+manual retries; blocked results require source/access review and cannot be
+retried. Normalization failures are recorded separately from successful
+collection and must be resolved before treating extracted items as complete.
+Metrics are aggregate diagnostics, not proof of coverage or an authenticated
+audit trail.
+
+For each investigation, distinguish source observations from claims and
+assessments; trace claims to the earliest known origin; review duplicate,
+syndication and independence decisions; retain contradictions, unknown
+confidence and evidence gaps; separate occurrence, method and attribution;
+and inspect event time separately from publication and collection time.
+Missing or failed inputs must remain visible in the assessment and report
+rather than being silently treated as negative evidence.

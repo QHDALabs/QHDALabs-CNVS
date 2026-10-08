@@ -6,7 +6,7 @@ import unittest
 from email.message import Message
 from pathlib import Path
 from urllib.error import HTTPError
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 import yaml
 
@@ -165,6 +165,70 @@ class CollectionTests(unittest.TestCase):
             ["SUCCEEDED", "FAILED"],
         )
 
+    def test_manual_retry_is_bounded_and_failures_have_aggregate_metrics(self):
+        registration = make_registration(access_method="URL")
+        failure = collection._CollectionFailure(
+            "network_error", "Synthetic connection failure."
+        )
+        with patch("cnvs.collection._check_public_host"), patch(
+            "cnvs.collection._fetch", side_effect=failure
+        ), self.assertLogs("cnvs.collection", level="ERROR") as captured:
+            result = collection.collect_source(self.database, registration)
+            for _ in range(collection.MAX_COLLECTION_ATTEMPTS - 1):
+                result = collection.retry_collection(
+                    self.database, registration, result.collection_id
+                )
+            with self.assertRaisesRegex(ValueError, "attempt limit"):
+                collection.retry_collection(
+                    self.database, registration, result.collection_id
+                )
+
+        self.assertEqual(result.attempt_number, collection.MAX_COLLECTION_ATTEMPTS)
+        self.assertEqual(result.status, "FAILED")
+        self.assertTrue(
+            all(
+                record.__dict__.get("event") == "collection_attempt"
+                for record in captured.records
+            )
+        )
+        self.assertTrue(all(not hasattr(record, "source_url") for record in captured.records))
+        connection = sqlite3.connect(self.database_path)
+        try:
+            with self.assertRaisesRegex(
+                sqlite3.IntegrityError, "attempt limit reached"
+            ):
+                connection.execute(
+                    """
+                    INSERT INTO collection_attempts (
+                        collection_id, source_id, source_metadata_json, attempt_number,
+                        status, retry_of, source_url, started_at, completed_at,
+                        origin_identifiers_json, error_code, error_message
+                    ) VALUES (?, ?, '{}', 4, 'FAILED', ?, ?, ?, ?, '[]',
+                        'network_error', 'Synthetic failure.')
+                    """,
+                    (
+                        "over-limit-attempt",
+                        registration.source_id,
+                        result.collection_id,
+                        registration.url,
+                        "2026-10-07T09:00:00Z",
+                        "2026-10-07T09:00:01Z",
+                    ),
+                )
+        finally:
+            connection.close()
+        self.assertEqual(
+            self.database.operational_metrics()["collection_failures"],
+            {"network_error": collection.MAX_COLLECTION_ATTEMPTS},
+        )
+        output = io.StringIO()
+        with contextlib.redirect_stdout(output):
+            cli_status = main(
+                ["source", "metrics", "--database", str(self.database_path)]
+            )
+        self.assertEqual(cli_status, 0)
+        self.assertIn('"network_error": 3', output.getvalue())
+
     def test_http_access_restriction_is_blocked_and_not_retryable(self):
         registration = make_registration(access_method="URL")
         with patch("cnvs.collection._check_public_host"), patch(
@@ -294,6 +358,22 @@ class CollectionTests(unittest.TestCase):
 
         self.assertEqual(raised.exception.code, "response_too_large")
         self.assertFalse(oversized.read_called)
+
+    def test_network_timeout_is_enforced_and_reported(self):
+        opener = Mock()
+        opener.open.side_effect = TimeoutError("Synthetic timeout.")
+        with patch("cnvs.collection._check_public_host"), patch(
+            "cnvs.collection.urllib.request.build_opener", return_value=opener
+        ):
+            with self.assertRaises(collection._CollectionFailure) as raised:
+                collection._fetch(
+                    "https://public.example/feed.xml",
+                    max_bytes=1024,
+                    timeout_seconds=7,
+                )
+
+        self.assertEqual(raised.exception.code, "network_error")
+        self.assertEqual(opener.open.call_args.kwargs["timeout"], 7)
 
     def test_oversized_response_is_not_misrepresented_as_an_empty_snapshot(self):
         registration = make_registration()

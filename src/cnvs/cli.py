@@ -1,5 +1,6 @@
 import argparse
 import json
+import logging
 import sqlite3
 import sys
 from collections.abc import Sequence
@@ -50,6 +51,9 @@ from cnvs.reporting import create_report
 from cnvs.settings import Settings
 from cnvs.storage import Database, StorageError
 from cnvs.validation import parse_record
+
+
+LOGGER = logging.getLogger("cnvs.cli")
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -116,6 +120,10 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     source_results.add_argument("--source-id", help="Limit results to one registry source.")
     source_results.add_argument("--database", help="SQLite database file.")
+    source_metrics = source_commands.add_parser(
+        "metrics", help="Show aggregate collection and processing outcomes."
+    )
+    source_metrics.add_argument("--database", help="SQLite database file.")
     source_normalize = source_commands.add_parser(
         "normalize", help="Normalize a successful archived collection."
     )
@@ -2144,6 +2152,21 @@ def main(argv: Sequence[str] | None = None) -> int:
                     _print_collection_result(collection_result)
                 return 0
 
+            if args.source_command == "metrics":
+                settings = Settings.from_environment(
+                    database_path_override=args.database
+                )
+                database = Database(settings.database_path)
+                print(
+                    json.dumps(
+                        database.operational_metrics(),
+                        ensure_ascii=True,
+                        indent=2,
+                        sort_keys=True,
+                    )
+                )
+                return 0
+
             settings = Settings.from_environment(
                 config_dir_override=args.config_dir,
                 database_path_override=args.database,
@@ -2179,5 +2202,16 @@ def main(argv: Sequence[str] | None = None) -> int:
         ValueError,
         StorageError,
     ) as error:
+        LOGGER.error(
+            "CLI command failed.",
+            extra={
+                "event": "cli_command_failed",
+                "command": args.command,
+                "subcommand": getattr(
+                    args, f"{args.command.replace('-', '_')}_command", None
+                ),
+                "error_type": type(error).__name__,
+            },
+        )
         print(f"cnvs: error: {error}", file=sys.stderr)
         return 2

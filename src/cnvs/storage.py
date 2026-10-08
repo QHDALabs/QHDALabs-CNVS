@@ -53,6 +53,9 @@ class StorageError(RuntimeError):
     """Raised when the database cannot safely store or reconstruct a record."""
 
 
+MAX_COLLECTION_ATTEMPTS = 3
+
+
 def _validate_timestamp(value: str, name: str) -> None:
     if _RFC3339_TIMESTAMP.fullmatch(value) is None:
         raise StorageError(f"{name} must be an RFC3339 timestamp with a timezone.")
@@ -474,6 +477,10 @@ class Database:
                     raise StorageError("Only failed collection attempts can be retried.")
                 if previous["source_id"] != source_id:
                     raise StorageError("A retry must use the same registered source.")
+                if previous["attempt_number"] >= MAX_COLLECTION_ATTEMPTS:
+                    raise StorageError(
+                        f"Collection attempt limit reached ({MAX_COLLECTION_ATTEMPTS})."
+                    )
                 latest = connection.execute(
                     """
                     SELECT collection_id FROM collection_attempts
@@ -596,6 +603,96 @@ class Database:
                 ).fetchall()
         return [self._collection_result_from_row(row) for row in rows]
 
+    def record_processing_attempt(
+        self,
+        *,
+        collection_id: str,
+        status: str,
+        started_at: str,
+        completed_at: str,
+        error_code: str | None = None,
+    ) -> str:
+        if status not in {"SUCCEEDED", "FAILED"}:
+            raise StorageError(f"Unsupported processing status: {status}.")
+        if (status == "SUCCEEDED") != (error_code is None):
+            raise StorageError(
+                "Successful processing attempts must not have an error code, "
+                "and failed attempts must have one."
+            )
+        _validate_timestamp(started_at, "Processing start time")
+        _validate_timestamp(completed_at, "Processing completion time")
+        attempt_id = uuid.uuid4().hex
+        with self._lock, self._write_transaction() as connection:
+            connection.execute(
+                """
+                INSERT INTO processing_attempts (
+                    processing_attempt_id, collection_id, stage, status,
+                    started_at, completed_at, error_code
+                ) VALUES (?, ?, 'NORMALIZATION', ?, ?, ?, ?)
+                """,
+                (
+                    attempt_id,
+                    collection_id,
+                    status,
+                    started_at,
+                    completed_at,
+                    error_code,
+                ),
+            )
+        return attempt_id
+
+    def operational_metrics(self) -> dict[str, dict[str, int]]:
+        metrics = {
+            "collection_attempts": {},
+            "collection_failures": {},
+            "normalization_attempts": {},
+            "normalization_failures": {},
+        }
+        with self._connect() as connection:
+            collection_statuses = connection.execute(
+                """
+                SELECT status, COUNT(*) AS count
+                FROM collection_attempts GROUP BY status
+                """
+            ).fetchall()
+            collection_failures = connection.execute(
+                """
+                SELECT error_code, COUNT(*) AS count
+                FROM collection_attempts
+                WHERE status != 'SUCCEEDED'
+                GROUP BY error_code
+                """
+            ).fetchall()
+            normalization_statuses = connection.execute(
+                """
+                SELECT status, COUNT(*) AS count
+                FROM processing_attempts
+                WHERE stage = 'NORMALIZATION'
+                GROUP BY status
+                """
+            ).fetchall()
+            normalization_failures = connection.execute(
+                """
+                SELECT error_code, COUNT(*) AS count
+                FROM processing_attempts
+                WHERE stage = 'NORMALIZATION' AND status = 'FAILED'
+                GROUP BY error_code
+                """
+            ).fetchall()
+        metrics["collection_attempts"].update(
+            {row["status"]: row["count"] for row in collection_statuses}
+        )
+        metrics["collection_failures"].update(
+            {row["error_code"]: row["count"] for row in collection_failures}
+        )
+        metrics["normalization_attempts"].update(
+            {row["status"]: row["count"] for row in normalization_statuses}
+        )
+        metrics["normalization_failures"].update(
+            {row["error_code"]: row["count"] for row in normalization_failures}
+        )
+        return metrics
+
     @staticmethod
     def _normalized_document_from_row(row: sqlite3.Row) -> NormalizedDocument:
         return NormalizedDocument(
@@ -626,7 +723,10 @@ class Database:
         )
 
     def save_normalized_documents(
-        self, documents: list[NormalizedDocument]
+        self,
+        documents: list[NormalizedDocument],
+        *,
+        _verified_snapshot_sha256: str | None = None,
     ) -> tuple[list[NormalizedDocument], list[DuplicateRelationship]]:
         if not documents:
             return [], []
@@ -644,21 +744,26 @@ class Database:
                 f"Collection {collection_id} has no retained content for normalization."
             )
         snapshot = self.get_raw_snapshot(result.archived_content_ref)
-        from cnvs.normalization import parse_collection_documents
+        if _verified_snapshot_sha256 is None:
+            from cnvs.normalization import parse_collection_documents
 
-        derived_documents = parse_collection_documents(
-            collection_id=result.collection_id,
-            source_id=result.source_id,
-            source_metadata=result.source_metadata,
-            source_url=result.source_url,
-            final_url=result.final_url,
-            content_type=result.content_type,
-            content=snapshot.content,
-            created_at=result.completed_at,
-        )
-        if documents != derived_documents:
+            derived_documents = parse_collection_documents(
+                collection_id=result.collection_id,
+                source_id=result.source_id,
+                source_metadata=result.source_metadata,
+                source_url=result.source_url,
+                final_url=result.final_url,
+                content_type=result.content_type,
+                content=snapshot.content,
+                created_at=result.completed_at,
+            )
+            if documents != derived_documents:
+                raise StorageError(
+                    f"Normalized documents do not match archived collection {collection_id}."
+                )
+        elif _verified_snapshot_sha256 != snapshot.content_sha256:
             raise StorageError(
-                f"Normalized documents do not match archived collection {collection_id}."
+                f"Collection {collection_id} changed after isolated document parsing."
             )
         inserted_document_ids: list[str] = []
         with self._lock, self._write_transaction() as connection:

@@ -1,8 +1,11 @@
 import hashlib
 import html
 import ipaddress
+import logging
+import multiprocessing
 import posixpath
 import re
+import time
 import xml.etree.ElementTree as ElementTree
 import unicodedata
 from dataclasses import dataclass
@@ -10,6 +13,7 @@ from datetime import datetime, timezone
 from difflib import SequenceMatcher
 from email.utils import parsedate_to_datetime
 from html.parser import HTMLParser
+from multiprocessing.connection import Connection
 from urllib.parse import parse_qsl, urlencode, urljoin, urlsplit, urlunsplit
 
 from cnvs.configuration import MVP_LANGUAGE_CODES
@@ -20,7 +24,7 @@ from cnvs.models import (
     TranslationRecord,
 )
 from cnvs.registry import SENSITIVE_QUERY_KEYS
-from cnvs.storage import Database
+from cnvs.storage import Database, StorageError
 
 
 TRACKING_QUERY_KEYS = frozenset(
@@ -29,13 +33,21 @@ TRACKING_QUERY_KEYS = frozenset(
 SIMILARITY_THRESHOLD = 0.82
 MIN_SIMILARITY_TEXT_LENGTH = 120
 MAX_TITLE_CHARS = 512
+MAX_NORMALIZATION_BYTES = 10 * 1024 * 1024
+MAX_NORMALIZATION_ITEMS = 5000
+PARSER_TIMEOUT_SECONDS = 15
 FORBIDDEN_XML_DECLARATIONS = re.compile(r"<!\s*(?:DOCTYPE|ENTITY)\b", re.IGNORECASE)
 LANGUAGE_TAG = re.compile(r"^[A-Za-z]{2,3}(?:-[A-Za-z0-9]{2,8})*$")
 WORD_PATTERN = re.compile(r"[^\W_]+", re.UNICODE)
+LOGGER = logging.getLogger("cnvs.normalization")
 
 
 class NormalizationError(ValueError):
     """Raised when stored source content cannot be normalized safely."""
+
+    def __init__(self, message: str, *, code: str = "normalization_error") -> None:
+        super().__init__(message)
+        self.code = code
 
 
 @dataclass(frozen=True)
@@ -47,6 +59,19 @@ class _ParsedItem:
     url: str | None
     published_at: str | None
     declared_language: str | None
+
+
+@dataclass(frozen=True)
+class _ParserRequest:
+    collection_id: str
+    source_id: str
+    source_metadata: dict[str, JsonValue]
+    source_url: str
+    final_url: str | None
+    content_type: str | None
+    content: bytes
+    created_at: str
+    operation: str = "normalize"
 
 
 class _HTMLTextExtractor(HTMLParser):
@@ -186,11 +211,16 @@ def _safe_xml_root(content: bytes) -> ElementTree.Element:
         except UnicodeError:
             continue
         if FORBIDDEN_XML_DECLARATIONS.search(text):
-            raise NormalizationError("RSS/Atom content contains a forbidden XML declaration.")
+            raise NormalizationError(
+                "RSS/Atom content contains a forbidden XML declaration.",
+                code="unsafe_feed_xml",
+            )
     try:
         return ElementTree.fromstring(content)
     except ElementTree.ParseError as error:
-        raise NormalizationError("Archived RSS/Atom content is not valid XML.") from error
+        raise NormalizationError(
+            "Archived RSS/Atom content is not valid XML.", code="invalid_feed"
+        ) from error
 
 
 def _local_name(tag: str) -> str:
@@ -226,18 +256,26 @@ def _parse_feed(content: bytes, feed_url: str) -> list[_ParsedItem]:
     root = _safe_xml_root(content)
     root_name = _local_name(root.tag)
     if root_name not in {"rss", "rdf", "feed"}:
-        raise NormalizationError("Archived collection is not an RSS or Atom feed.")
+        raise NormalizationError(
+            "Archived collection is not an RSS or Atom feed.",
+            code="unsupported_feed_format",
+        )
     feed_language = root.attrib.get("{http://www.w3.org/XML/1998/namespace}lang")
     channel = next(
         (child for child in root if _local_name(child.tag) == "channel"), root
     )
     channel_values = _child_values(channel)
     feed_language = feed_language or channel_values.get("language")
-    elements = [
-        element
-        for element in root.iter()
-        if _local_name(element.tag) in {"item", "entry"}
-    ]
+    elements: list[ElementTree.Element] = []
+    for element in root.iter():
+        if _local_name(element.tag) in {"item", "entry"}:
+            elements.append(element)
+            if len(elements) > MAX_NORMALIZATION_ITEMS:
+                raise NormalizationError(
+                    "Feed exceeds the "
+                    f"{MAX_NORMALIZATION_ITEMS:,}-item normalization limit.",
+                    code="too_many_items",
+                )
     parsed_items: list[_ParsedItem] = []
     for index, item in enumerate(elements):
         values = _child_values(item)
@@ -277,7 +315,9 @@ def _parse_feed(content: bytes, feed_url: str) -> list[_ParsedItem]:
             )
         )
     if not elements:
-        raise NormalizationError("RSS/Atom feed contains no item or entry elements.")
+        raise NormalizationError(
+            "RSS/Atom feed contains no item or entry elements.", code="empty_feed"
+        )
     return parsed_items
 
 
@@ -360,29 +400,21 @@ def _language(
     return "unknown", "UNKNOWN", review_status
 
 
-def parse_collection_documents(
-    *,
-    collection_id: str,
-    source_id: str,
-    source_metadata: dict[str, JsonValue],
-    source_url: str,
-    final_url: str | None,
-    content_type: str | None,
-    content: bytes,
-    created_at: str,
+def _parse_collection_documents_in_process(
+    request: _ParserRequest,
 ) -> list[NormalizedDocument]:
-    if content_type in {"application/rss+xml", "application/atom+xml", "application/xml", "text/xml", "text/rss+xml"}:
-        items = _parse_feed(content, final_url or source_url)
-    elif content_type in {"text/html", "application/xhtml+xml"}:
-        items = _parse_html(content, source_url, final_url)
+    if request.content_type in {"application/rss+xml", "application/atom+xml", "application/xml", "text/xml", "text/rss+xml"}:
+        items = _parse_feed(request.content, request.final_url or request.source_url)
+    elif request.content_type in {"text/html", "application/xhtml+xml"}:
+        items = _parse_html(request.content, request.source_url, request.final_url)
     else:
         raise NormalizationError(
-            f"Content type {content_type!r} is not supported for normalization."
+            f"Content type {request.content_type!r} is not supported for normalization."
         )
 
-    registry_language = source_metadata.get("language")
+    registry_language = request.source_metadata.get("language")
     registry_language = registry_language if isinstance(registry_language, str) else None
-    publisher = source_metadata.get("publisher")
+    publisher = request.source_metadata.get("publisher")
     publisher_original = publisher.strip() if isinstance(publisher, str) else ""
     documents: list[NormalizedDocument] = []
     for item in items:
@@ -394,13 +426,15 @@ def parse_collection_documents(
             item.declared_language, registry_language
         )
         normalized_published_at, timezone_known = _timestamp(item.published_at)
-        origin_identifier = item.identifier or item.url or f"{collection_id}:{item.index}"
-        identity = f"{collection_id}\0{item.index}\0{origin_identifier}"
+        origin_identifier = (
+            item.identifier or item.url or f"{request.collection_id}:{item.index}"
+        )
+        identity = f"{request.collection_id}\0{item.index}\0{origin_identifier}"
         documents.append(
             NormalizedDocument(
                 document_id=hashlib.sha256(identity.encode("utf-8")).hexdigest(),
-                collection_id=collection_id,
-                source_id=source_id,
+                collection_id=request.collection_id,
+                source_id=request.source_id,
                 item_index=item.index,
                 origin_identifier=origin_identifier,
                 original_title=original_title,
@@ -421,10 +455,143 @@ def parse_collection_documents(
                 publication_timezone_known=timezone_known,
                 text_sha256=hashlib.sha256(original_text.encode("utf-8")).hexdigest(),
                 normalized_text_sha256=hashlib.sha256(normalized.encode("utf-8")).hexdigest(),
-                created_at=created_at,
+                created_at=request.created_at,
             )
         )
     return documents
+
+
+def _parse_in_worker(connection: Connection, request: _ParserRequest) -> None:
+    try:
+        if request.operation == "feed_origin_identifiers":
+            items = _parse_feed(
+                request.content, request.final_url or request.source_url
+            )
+            identifiers = tuple(
+                dict.fromkeys(
+                    identifier
+                    for item in items
+                    for identifier in (item.identifier, item.url)
+                    if identifier
+                )
+            )
+            connection.send((True, identifiers, None))
+        else:
+            documents = _parse_collection_documents_in_process(request)
+            connection.send((True, documents, None))
+    except NormalizationError as error:
+        connection.send((False, error.code, str(error)))
+    except Exception as error:
+        connection.send((False, "parser_error", type(error).__name__))
+    finally:
+        connection.close()
+
+
+def _run_isolated_parser(request: _ParserRequest) -> object:
+    content = request.content
+    if len(content) > MAX_NORMALIZATION_BYTES:
+        raise NormalizationError(
+            f"Archived content exceeds the {MAX_NORMALIZATION_BYTES}-byte "
+            "normalization limit.",
+            code="input_too_large",
+        )
+    context = multiprocessing.get_context("spawn")
+    receiver, sender = context.Pipe(duplex=False)
+    process = context.Process(
+        target=_parse_in_worker, args=(sender, request), daemon=True
+    )
+    started = False
+    try:
+        process.start()
+        started = True
+        sender.close()
+        if not receiver.poll(PARSER_TIMEOUT_SECONDS):
+            raise NormalizationError(
+                f"Document parsing exceeded {PARSER_TIMEOUT_SECONDS} seconds.",
+                code="parser_timeout",
+            )
+        try:
+            succeeded, payload, detail = receiver.recv()
+        except EOFError as error:
+            raise NormalizationError(
+                "The isolated document parser exited without a result.",
+                code="parser_process_failed",
+            ) from error
+        process.join(timeout=1)
+        if succeeded:
+            return payload
+        if payload == "parser_error":
+            raise NormalizationError(
+                f"The isolated document parser failed ({detail}).",
+                code="parser_error",
+            )
+        raise NormalizationError(str(detail), code=str(payload))
+    finally:
+        receiver.close()
+        sender.close()
+        if started:
+            if process.is_alive():
+                process.terminate()
+            process.join()
+
+
+def parse_collection_documents(
+    *,
+    collection_id: str,
+    source_id: str,
+    source_metadata: dict[str, JsonValue],
+    source_url: str,
+    final_url: str | None,
+    content_type: str | None,
+    content: bytes,
+    created_at: str,
+) -> list[NormalizedDocument]:
+    payload = _run_isolated_parser(
+        _ParserRequest(
+            collection_id=collection_id,
+            source_id=source_id,
+            source_metadata=source_metadata,
+            source_url=source_url,
+            final_url=final_url,
+            content_type=content_type,
+            content=content,
+            created_at=created_at,
+        )
+    )
+    if isinstance(payload, list) and all(
+        isinstance(document, NormalizedDocument) for document in payload
+    ):
+        return payload
+    raise NormalizationError(
+        "The isolated document parser returned an invalid result.",
+        code="parser_process_failed",
+    )
+
+
+def parse_feed_origin_identifiers(
+    content: bytes, feed_url: str
+) -> tuple[str, ...]:
+    payload = _run_isolated_parser(
+        _ParserRequest(
+            collection_id="collection",
+            source_id="source",
+            source_metadata={},
+            source_url=feed_url,
+            final_url=feed_url,
+            content_type="application/rss+xml",
+            content=content,
+            created_at="",
+            operation="feed_origin_identifiers",
+        )
+    )
+    if isinstance(payload, tuple) and all(
+        isinstance(identifier, str) for identifier in payload
+    ):
+        return payload
+    raise NormalizationError(
+        "The isolated document parser returned invalid feed identifiers.",
+        code="parser_process_failed",
+    )
 
 
 def _shingles(text: str) -> set[tuple[str, ...]]:
@@ -487,27 +654,100 @@ def normalize_collection(
     database: Database, collection_id: str
 ) -> tuple[list[NormalizedDocument], list[DuplicateRelationship]]:
     result = database.get_collection_result(collection_id)
-    if result.status != "SUCCEEDED":
-        raise NormalizationError(
-            f"Collection {collection_id} has status {result.status}; only successful "
-            "collections can be normalized."
-        )
-    if result.archived_content_ref is None:
-        raise NormalizationError(
-            f"Collection {collection_id} has no retained content available to normalize."
-        )
-    snapshot = database.get_raw_snapshot(result.archived_content_ref)
-    documents = parse_collection_documents(
-        collection_id=result.collection_id,
-        source_id=result.source_id,
-        source_metadata=result.source_metadata,
-        source_url=result.source_url,
-        final_url=result.final_url,
-        content_type=result.content_type,
-        content=snapshot.content,
-        created_at=result.completed_at,
+    started_at = datetime.now(timezone.utc).isoformat(timespec="seconds").replace(
+        "+00:00", "Z"
     )
-    return database.save_normalized_documents(documents)
+    started_monotonic = time.perf_counter()
+    try:
+        if result.status != "SUCCEEDED":
+            raise NormalizationError(
+                f"Collection {collection_id} has status {result.status}; only successful "
+                "collections can be normalized."
+            )
+        if result.archived_content_ref is None:
+            raise NormalizationError(
+                f"Collection {collection_id} has no retained content available to normalize."
+            )
+        snapshot = database.get_raw_snapshot(result.archived_content_ref)
+        documents = parse_collection_documents(
+            collection_id=result.collection_id,
+            source_id=result.source_id,
+            source_metadata=result.source_metadata,
+            source_url=result.source_url,
+            final_url=result.final_url,
+            content_type=result.content_type,
+            content=snapshot.content,
+            created_at=result.completed_at,
+        )
+        normalized = database.save_normalized_documents(
+            documents, _verified_snapshot_sha256=snapshot.content_sha256
+        )
+    except NormalizationError as error:
+        database.record_processing_attempt(
+            collection_id=collection_id,
+            status="FAILED",
+            started_at=started_at,
+            completed_at=datetime.now(timezone.utc)
+            .isoformat(timespec="seconds")
+            .replace("+00:00", "Z"),
+            error_code=error.code,
+        )
+        LOGGER.error(
+            "Collection normalization failed.",
+            extra={
+                "event": "normalization_attempt",
+                "collection_id": collection_id,
+                "stage": "NORMALIZATION",
+                "status": "FAILED",
+                "error_code": error.code,
+                "duration_ms": round((time.perf_counter() - started_monotonic) * 1000),
+            },
+        )
+        raise
+    except StorageError:
+        database.record_processing_attempt(
+            collection_id=collection_id,
+            status="FAILED",
+            started_at=started_at,
+            completed_at=datetime.now(timezone.utc)
+            .isoformat(timespec="seconds")
+            .replace("+00:00", "Z"),
+            error_code="storage_error",
+        )
+        LOGGER.error(
+            "Collection normalization could not be persisted.",
+            extra={
+                "event": "normalization_attempt",
+                "collection_id": collection_id,
+                "stage": "NORMALIZATION",
+                "status": "FAILED",
+                "error_code": "storage_error",
+                "duration_ms": round((time.perf_counter() - started_monotonic) * 1000),
+            },
+        )
+        raise
+    completed_at = datetime.now(timezone.utc).isoformat(timespec="seconds").replace(
+        "+00:00", "Z"
+    )
+    database.record_processing_attempt(
+        collection_id=collection_id,
+        status="SUCCEEDED",
+        started_at=started_at,
+        completed_at=completed_at,
+    )
+    LOGGER.info(
+        "Collection normalization succeeded.",
+        extra={
+            "event": "normalization_attempt",
+            "collection_id": collection_id,
+            "stage": "NORMALIZATION",
+            "status": "SUCCEEDED",
+            "document_count": len(normalized[0]),
+            "duplicate_candidate_count": len(normalized[1]),
+            "duration_ms": round((time.perf_counter() - started_monotonic) * 1000),
+        },
+    )
+    return normalized
 
 
 def add_translation(

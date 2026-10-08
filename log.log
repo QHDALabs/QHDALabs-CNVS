@@ -391,22 +391,37 @@ Implementation:
 
 Stage 12 — Operational quality, security and reliability
 ---------------------------------------------------------
-Status: TODO
+Status: IMPLEMENTATION COMPLETE; DEPLOYMENT REVIEW PENDING
 Tasks:
-- Add tests for ingestion, normalization, deduplication, extraction, provenance,
-  evidence linking, reporting and failure paths.
-- Add structured logs and basic metrics for collection and processing failures.
-- Implement timeouts, bounded retries and visible partial-failure reporting.
-- Validate inputs; protect credentials; isolate risky document parsing.
-- Review data access, retention, backups and audit requirements.
-- Enforce the architecture quality gates for provenance, independence,
-  evidence, attribution, contradiction, time, uncertainty and human review.
+- Automated coverage spans ingestion, normalization, deduplication, extraction,
+  provenance, evidence linking, reporting and failure paths; Stage 12 adds
+  regression coverage for bounded retries, parser limits and visible metrics.
+- Structured JSON logging and aggregate collection/normalization metrics are
+  implemented without logging source URLs or retrieved content.
+- Network and parser timeouts are enforced; retries are manual and capped at
+  three attempts per source; failures remain inspectable and non-successful.
+- XML/HTML parsing runs in a spawned worker with input/item limits; credential
+  checks and public-destination validation remain enforced.
+- Retention, access, backup and audit limitations and deployment prerequisites
+  are documented; the software does not implement authentication, role-based
+  access, automated deletion, backup expiry or a protected audit service.
+- Analyst procedures and the existing domain tests preserve provenance,
+  independence, evidence, attribution, contradiction, time, uncertainty and
+  human-review quality gates.
 Done when:
-- Failure of a source or external provider is visible and does not silently
-  produce a success-shaped result.
-- Critical analytical invariants are covered by automated tests and documented
+- [x] Source and processing failures are visible and do not produce
+  success-shaped results; no external-provider integration is implemented.
+- [x] Critical analytical invariants have automated coverage and documented
   analyst procedures.
-- Security and privacy review is complete for the intended MVP deployment.
+- [ ] Security/privacy approval is complete for an intended deployment. No
+  deployment environment, access-control implementation or organizational
+  legal/privacy sign-off was available to verify; do not use this prototype
+  for operational deployment until the documented review is complete.
+- Verification: `.\.venv\Scripts\python.exe -m unittest discover -s tests -v`
+  — 109 tests passed; `.\.venv\Scripts\python.exe -m cnvs config validate` —
+  12 countries, 11 languages, 9 event types and 2 source types valid;
+  no Pylance errors in changed Python files; `git diff --check` passes. The
+  hosted GitHub Actions workflow was not triggered.
 
 Stage 13 — MVP release readiness
 -------------------------------

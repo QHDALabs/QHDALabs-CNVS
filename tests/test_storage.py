@@ -105,9 +105,10 @@ class DatabaseTests(unittest.TestCase):
                 "007_evidence_reviews",
                 "008_national_information_matrix",
                 "009_analyst_reports",
+                "010_operational_quality",
             ],
         )
-        self.assertEqual(self.database.migrate(), 9)
+        self.assertEqual(self.database.migrate(), 10)
 
         reopened = Database(self.database_path)
         self.assertEqual(reopened.migration_status(), self.database.migration_status())
@@ -336,7 +337,7 @@ class DatabaseTests(unittest.TestCase):
         with contextlib.redirect_stdout(output):
             result = main(["db", "migrate", "--database", str(self.database_path)])
         self.assertEqual(result, 0)
-        self.assertIn("9 migration(s) applied", output.getvalue())
+        self.assertIn("10 migration(s) applied", output.getvalue())
 
         output = io.StringIO()
         with contextlib.redirect_stdout(output):

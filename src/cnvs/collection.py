@@ -1,8 +1,9 @@
 import ipaddress
+import logging
 import socket
+import time
 import urllib.error
 import urllib.request
-import xml.etree.ElementTree as ElementTree
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from email.message import Message
@@ -13,7 +14,7 @@ from urllib.robotparser import RobotFileParser
 
 from cnvs.models import CollectionResult, JsonValue
 from cnvs.registry import SENSITIVE_QUERY_KEYS, SourceRegistration
-from cnvs.storage import Database
+from cnvs.storage import MAX_COLLECTION_ATTEMPTS, Database
 
 
 USER_AGENT = "CNVS/0.1 (public source collection)"
@@ -21,6 +22,7 @@ REDIRECT_CODES = {301, 302, 303, 307, 308}
 ACCESS_RESTRICTED_CODES = {401, 403, 429, 451}
 MAX_REDIRECTS = 5
 MAX_ROBOTS_BYTES = 512 * 1024
+LOGGER = logging.getLogger("cnvs.collection")
 
 
 @dataclass(frozen=True)
@@ -309,50 +311,15 @@ def _check_robots(url: str, entry: SourceRegistration) -> None:
         )
 
 
-def _contains_forbidden_xml_declaration(content: bytes) -> bool:
-    for encoding in ("utf-8-sig", "utf-16", "utf-32"):
-        try:
-            text = content.decode(encoding)
-        except UnicodeError:
-            continue
-        normalized = text.upper()
-        if "<!DOCTYPE" in normalized or "<!ENTITY" in normalized:
-            return True
-    return False
+def _rss_origin_identifiers(
+    content: bytes, feed_url: str = "https://feed.invalid/"
+) -> tuple[str, ...]:
+    from cnvs.normalization import NormalizationError, parse_feed_origin_identifiers
 
-
-def _rss_origin_identifiers(content: bytes) -> tuple[str, ...]:
-    if _contains_forbidden_xml_declaration(content):
-        raise _CollectionFailure(
-            "unsafe_feed_xml", "RSS/Atom feed contains a forbidden XML declaration."
-        )
     try:
-        root = ElementTree.fromstring(content)
-    except ElementTree.ParseError as error:
-        raise _CollectionFailure("invalid_feed", "RSS/Atom feed is not valid XML.") from error
-    root_name = root.tag.rsplit("}", 1)[-1].lower()
-    if root_name not in {"feed", "rdf", "rss"}:
-        raise _CollectionFailure(
-            "unsupported_feed_format",
-            "The source did not return an RSS or Atom feed document.",
-        )
-
-    identifiers: list[str] = []
-    for item in root.iter():
-        if item.tag.rsplit("}", 1)[-1].lower() not in {"item", "entry"}:
-            continue
-        for child in item:
-            name = child.tag.rsplit("}", 1)[-1].lower()
-            value = (
-                child.attrib.get("href") or child.text
-                if name == "link"
-                else child.text
-            )
-            if name in {"guid", "id", "link"} and isinstance(value, str) and value.strip():
-                normalized = value.strip()
-                if normalized not in identifiers:
-                    identifiers.append(normalized)
-    return tuple(identifiers)
+        return parse_feed_origin_identifiers(content, feed_url)
+    except NormalizationError as error:
+        raise _CollectionFailure(error.code, str(error)) from error
 
 
 def _record(
@@ -411,6 +378,26 @@ def _record(
     )
 
 
+def _log_collection_result(
+    result: CollectionResult, started_monotonic: float
+) -> None:
+    details = {
+        "event": "collection_attempt",
+        "source_id": result.source_id,
+        "collection_id": result.collection_id,
+        "attempt_number": result.attempt_number,
+        "status": result.status,
+        "error_code": result.error_code,
+        "duration_ms": round((time.perf_counter() - started_monotonic) * 1000),
+    }
+    if result.status == "FAILED":
+        LOGGER.error("Source collection failed.", extra=details)
+    elif result.status == "BLOCKED":
+        LOGGER.warning("Source collection was blocked.", extra=details)
+    else:
+        LOGGER.info("Source collection succeeded.", extra=details)
+
+
 def collect_source(
     database: Database,
     entry: SourceRegistration,
@@ -418,8 +405,9 @@ def collect_source(
     retry_of: str | None = None,
 ) -> CollectionResult:
     started_at = _now()
+    started_monotonic = time.perf_counter()
     if not entry.approved:
-        return _record(
+        result = _record(
             database,
             entry,
             status="BLOCKED",
@@ -429,6 +417,8 @@ def collect_source(
             error_code="source_not_approved",
             error_message="Source collection requires an enabled, analyst-approved registry entry.",
         )
+        _log_collection_result(result, started_monotonic)
+        return result
 
     checked_origins: set[tuple[str, str, int]] = set()
 
@@ -464,14 +454,18 @@ def collect_source(
         if entry.access_method == "RSS":
             origin_identifiers = tuple(
                 dict.fromkeys(
-                    (entry.url, response.final_url, *_rss_origin_identifiers(body))
+                    (
+                        entry.url,
+                        response.final_url,
+                        *_rss_origin_identifiers(body, response.final_url),
+                    )
                 )
             )
         else:
             origin_identifiers = tuple(
                 dict.fromkeys((entry.url, response.final_url))
             )
-        return _record(
+        result = _record(
             database,
             entry,
             status="SUCCEEDED",
@@ -482,6 +476,8 @@ def collect_source(
             content=body,
             origin_identifiers=origin_identifiers,
         )
+        _log_collection_result(result, started_monotonic)
+        return result
     except _CollectionFailure as error:
         failed_response = error.response or response
         error_body = (
@@ -490,7 +486,7 @@ def collect_source(
             else body
         )
         status = "BLOCKED" if error.blocked else "FAILED"
-        return _record(
+        result = _record(
             database,
             entry,
             status=status,
@@ -503,6 +499,8 @@ def collect_source(
             error_code=error.code,
             error_message=str(error),
         )
+        _log_collection_result(result, started_monotonic)
+        return result
 
 
 def retry_collection(
@@ -517,6 +515,10 @@ def retry_collection(
         )
     if previous.status != "FAILED":
         raise ValueError("Only failed collection attempts can be retried.")
+    if previous.attempt_number >= MAX_COLLECTION_ATTEMPTS:
+        raise ValueError(
+            f"Collection attempt limit reached ({MAX_COLLECTION_ATTEMPTS})."
+        )
     return collect_source(database, entry, retry_of=collection_id)
 
 

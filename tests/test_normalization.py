@@ -6,10 +6,18 @@ import tempfile
 import unittest
 from dataclasses import replace
 from pathlib import Path
+from unittest.mock import patch
 
 from cnvs.cli import main
 from cnvs.models import CollectionResult
-from cnvs.normalization import NormalizationError, normalize_collection, normalize_text, normalize_url
+from cnvs.normalization import (
+    MAX_NORMALIZATION_BYTES,
+    NormalizationError,
+    normalize_collection,
+    normalize_text,
+    normalize_url,
+    parse_collection_documents,
+)
 from cnvs.storage import Database, StorageError
 
 
@@ -113,6 +121,10 @@ class NormalizationTests(unittest.TestCase):
         self.assertEqual(
             self.database.normalized_documents(collection_id=collected.collection_id),
             documents,
+        )
+        self.assertEqual(
+            self.database.operational_metrics()["normalization_attempts"],
+            {"SUCCEEDED": 1},
         )
 
     def test_language_conflicts_and_unzoned_dates_are_flagged_not_discarded(self):
@@ -357,6 +369,100 @@ class NormalizationTests(unittest.TestCase):
         )
         with self.assertRaisesRegex(NormalizationError, "only successful"):
             normalize_collection(self.database, failed.collection_id)
+
+    def test_normalization_failures_are_recorded_and_visible_in_metrics(self):
+        collected = self.add_collection(
+            source_id="SYNTHETIC-UNSUPPORTED",
+            body=b"<not-a-supported-source/>",
+            content_type="application/json",
+        )
+
+        with self.assertLogs("cnvs.normalization", level="ERROR") as captured:
+            with self.assertRaisesRegex(NormalizationError, "not supported"):
+                normalize_collection(self.database, collected.collection_id)
+
+        self.assertEqual(
+            [
+                (
+                    record.__dict__.get("event"),
+                    record.__dict__.get("status"),
+                    record.__dict__.get("error_code"),
+                )
+                for record in captured.records
+            ],
+            [("normalization_attempt", "FAILED", "normalization_error")],
+        )
+        self.assertEqual(
+            self.database.operational_metrics()["normalization_attempts"],
+            {"FAILED": 1},
+        )
+        self.assertEqual(
+            self.database.operational_metrics()["normalization_failures"],
+            {"normalization_error": 1},
+        )
+        connection = sqlite3.connect(self.database_path)
+        try:
+            with self.assertRaisesRegex(sqlite3.IntegrityError, "immutable"):
+                connection.execute(
+                    "UPDATE processing_attempts SET status = 'SUCCEEDED' "
+                    "WHERE collection_id = ?",
+                    (collected.collection_id,),
+                )
+            with self.assertRaisesRegex(sqlite3.IntegrityError, "immutable"):
+                connection.execute(
+                    "DELETE FROM processing_attempts WHERE collection_id = ?",
+                    (collected.collection_id,),
+                )
+        finally:
+            connection.close()
+
+    def test_normalization_rejects_oversized_input_before_starting_parser(self):
+        with self.assertRaisesRegex(NormalizationError, "normalization limit") as raised:
+            parse_collection_documents(
+                collection_id="synthetic-collection",
+                source_id="synthetic-source",
+                source_metadata={},
+                source_url="https://example.test/feed",
+                final_url=None,
+                content_type="application/rss+xml",
+                content=b"x" * (MAX_NORMALIZATION_BYTES + 1),
+                created_at="2026-10-07T10:00:00Z",
+            )
+        self.assertEqual(raised.exception.code, "input_too_large")
+
+    def test_parser_timeout_is_recorded_as_failure(self):
+        collected = self.add_collection(
+            source_id="SYNTHETIC-PARSER-TIMEOUT",
+            body=feed(guid="timeout", text="A bounded parser test."),
+        )
+        with patch("cnvs.normalization.PARSER_TIMEOUT_SECONDS", 0):
+            with self.assertRaisesRegex(NormalizationError, "exceeded 0 seconds") as raised:
+                normalize_collection(self.database, collected.collection_id)
+
+        self.assertEqual(raised.exception.code, "parser_timeout")
+        self.assertEqual(
+            self.database.operational_metrics()["normalization_failures"],
+            {"parser_timeout": 1},
+        )
+
+    def test_feed_item_limit_is_a_recorded_processing_failure(self):
+        content = (
+            b"<rss><channel>"
+            + b"<item/>" * 5001
+            + b"</channel></rss>"
+        )
+        collected = self.add_collection(
+            source_id="SYNTHETIC-ITEM-LIMIT",
+            body=content,
+        )
+        with self.assertRaisesRegex(NormalizationError, "5,000-item") as raised:
+            normalize_collection(self.database, collected.collection_id)
+
+        self.assertEqual(raised.exception.code, "too_many_items")
+        self.assertEqual(
+            self.database.operational_metrics()["normalization_failures"],
+            {"too_many_items": 1},
+        )
 
     def test_rerunning_normalization_is_idempotent(self):
         collected = self.add_collection(

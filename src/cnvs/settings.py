@@ -3,6 +3,8 @@ import os
 from dataclasses import dataclass
 from pathlib import Path
 
+from cnvs.logging_config import configure_logging
+
 
 VALID_LOG_LEVELS = frozenset({"DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"})
 
@@ -45,8 +47,7 @@ class Settings:
                 f"Invalid CNVS log level {log_level!r}; choose one of: {valid_levels}."
             )
         logging_level = getattr(logging, log_level)
-        logging.basicConfig(level=logging_level)
-        logging.getLogger().setLevel(logging_level)
+        configure_logging(logging_level)
         return cls(
             config_dir=Path(config_dir).expanduser().resolve(),
             log_level=log_level,
