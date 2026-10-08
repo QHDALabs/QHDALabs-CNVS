@@ -8,9 +8,10 @@ independent.
 
 > **Status: early MVP implementation.** The CLI can validate the reviewed
 > configuration, manage a local SQLite database, collect approved public RSS
-> feeds and URLs, and inspect immutable collection results. The checked-in
-> source registry contains only a disabled synthetic example: no live source
-> has been reviewed or approved. CNVS is not a verification engine or analyst
+> feeds and URLs, create versioned event records, review source-to-event
+> matches, and maintain auditable event timelines. The checked-in source
+> registry contains only a disabled synthetic example: no live source has
+> been reviewed or approved. CNVS is not a verification engine or full analyst
 > application.
 
 ## Guiding principles
@@ -105,11 +106,13 @@ python -m unittest discover -s tests -v
 The `cnvs` command validates configuration, manages the local SQLite schema,
 collects approved public RSS/URL sources, preserves normalized document text
 and provenance, records translations, and surfaces duplicate/syndication
-candidates for analyst review. Candidate links never merge source records or
-automatically designate evidence independent. Event analysis and operational
-report generation are not implemented. See
-[docs/DEVELOPMENT.md](./docs/DEVELOPMENT.md) for platform-specific setup and
-environment variable details.
+candidates for analyst review. It also supports creating and revising event
+records, proposing and reviewing source-document matches, and auditing
+chronology corrections. Candidate matches remain unresolved until explicitly
+reviewed; events and sources are never silently merged. Claim extraction,
+cross-national analysis and operational report generation are not implemented.
+See [docs/DEVELOPMENT.md](./docs/DEVELOPMENT.md) for platform-specific setup
+and environment variable details.
 
 ## Configuration
 
@@ -130,6 +133,13 @@ python -m cnvs source retry COLLECTION-ID
 python -m cnvs source normalize COLLECTION-ID
 python -m cnvs source documents --collection-id COLLECTION-ID
 python -m cnvs source duplicates --status PENDING
+python -m cnvs event create --file event-record.json
+python -m cnvs event list
+python -m cnvs event match CNVS-EVT-2026-10-08-0001 DOCUMENT-ID --proposed-by analyst --rationale "Candidate incident match"
+python -m cnvs event matches --status PENDING
+python -m cnvs event match-history MATCH-ID
+python -m cnvs event review-match MATCH-ID --decision LINKED --reviewer reviewer --rationale "Manually corroborated"
+python -m cnvs event timeline CNVS-EVT-2026-10-08-0001
 ```
 
 Normalization requires a retained source snapshot, so it is unavailable when
@@ -137,6 +147,14 @@ the source registry disallows content archiving. Language is recorded from
 source declarations/registry or marked unknown; automated language detection
 and translation are not included. Analyst- or tool-produced translations are
 stored separately with provenance.
+
+Event matching is analyst-assisted, not automatic. A proposed source-document
+match stays pending until reviewed as linked, rejected or unresolved. An
+accepted link creates a timeline entry; event occurrence time can then be
+recorded or corrected separately from the source's publication and collection
+times. Corrections append a rationale-bearing revision rather than rewriting
+history. See [docs/DATA_MODEL.md](./docs/DATA_MODEL.md) and
+[docs/DEVELOPMENT.md](./docs/DEVELOPMENT.md) for details.
 
 ## Validation
 
@@ -153,9 +171,11 @@ MVP configuration, registry approval constraints, mocked RSS/URL collection,
 robots and public-address restrictions, append-only collection results,
 normalization and preserved text/timestamp values, language uncertainty,
 translation provenance, exact and likely duplicate relationships, immutable
-normalized records, checksummed migrations, record revision history, source
-snapshots and assessment reconstruction. They do not validate live source
-availability, source rights, analyst conclusions or source approvals.
+normalized records, event lifecycle and reviewable source matching, distinct
+event/publication/collection times, timeline corrections and their history,
+checksummed migrations, record revision history, source snapshots and
+assessment reconstruction. They do not validate live source availability,
+source rights, analyst conclusions or source approvals.
 
 ## Contributing
 

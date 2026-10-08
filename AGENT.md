@@ -4,8 +4,10 @@
 
 CNVS is intended to help human analysts investigate events across national
 information environments. The current CLI validates configuration, manages
-local SQLite persistence, and supports analyst-approved public RSS/URL
-collection. It is not a verification engine or analyst application.
+local SQLite persistence, collects analyst-approved public RSS/URL sources,
+normalizes retained documents, and supports versioned event records,
+analyst-reviewed source matching and auditable timelines. It is not a
+verification engine or full analyst application.
 
 Read `MANIFEST.md` and `ARCHITECTURE.md` before implementing or changing
 analytical behavior. Follow the human-in-the-loop requirements and quality

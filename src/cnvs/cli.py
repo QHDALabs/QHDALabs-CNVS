@@ -1,4 +1,5 @@
 import argparse
+import json
 import sqlite3
 import sys
 from collections.abc import Sequence
@@ -11,7 +12,10 @@ from cnvs.configuration import ConfigurationError, validate_configuration
 from cnvs.models import (
     CollectionResult,
     DuplicateRelationship,
+    Event,
+    EventSourceMatch,
     NormalizedDocument,
+    TimelineEntry,
     TranslationRecord,
 )
 from cnvs.normalization import (
@@ -21,6 +25,7 @@ from cnvs.normalization import (
 from cnvs.registry import load_source_registry
 from cnvs.settings import Settings
 from cnvs.storage import Database, StorageError
+from cnvs.validation import parse_record
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -134,6 +139,85 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     source_translation_list.add_argument("document_id")
     source_translation_list.add_argument("--database", help="SQLite database file.")
+
+    event_parser = commands.add_parser(
+        "event", help="Create events, review source matches and maintain timelines."
+    )
+    event_commands = event_parser.add_subparsers(
+        dest="event_command", required=True
+    )
+    for name, help_text in (
+        ("create", "Create an event from a validated JSON record."),
+        ("update", "Save an event correction as a new record revision."),
+    ):
+        command_parser = event_commands.add_parser(name, help=help_text)
+        command_parser.add_argument("--file", required=True, help="Event JSON file.")
+        command_parser.add_argument("--database", help="SQLite database file.")
+    event_list = event_commands.add_parser("list", help="List current events.")
+    event_list.add_argument("--database", help="SQLite database file.")
+    event_show = event_commands.add_parser("show", help="Show one current event.")
+    event_show.add_argument("event_id")
+    event_show.add_argument("--revision", type=int)
+    event_show.add_argument("--database", help="SQLite database file.")
+    event_match = event_commands.add_parser(
+        "match", help="Propose a source-document match; proposal remains pending."
+    )
+    event_match.add_argument("event_id")
+    event_match.add_argument("document_id")
+    event_match.add_argument("--proposed-by", required=True)
+    event_match.add_argument("--rationale", required=True)
+    event_match.add_argument("--proposed-at")
+    event_match.add_argument("--database", help="SQLite database file.")
+    event_matches = event_commands.add_parser(
+        "matches", help="List candidate event/source matches."
+    )
+    event_matches.add_argument("--event-id")
+    event_matches.add_argument("--document-id")
+    event_matches.add_argument(
+        "--status",
+        choices=("PENDING", "LINKED", "REJECTED", "UNRESOLVED"),
+    )
+    event_matches.add_argument("--database", help="SQLite database file.")
+    event_review = event_commands.add_parser(
+        "review-match", help="Review a candidate event/source match."
+    )
+    event_review.add_argument("match_id")
+    event_review.add_argument(
+        "--decision", required=True, choices=("LINKED", "REJECTED", "UNRESOLVED")
+    )
+    event_review.add_argument("--reviewer", required=True)
+    event_review.add_argument("--rationale", required=True)
+    event_review.add_argument("--reviewed-at")
+    event_review.add_argument("--database", help="SQLite database file.")
+    event_match_history = event_commands.add_parser(
+        "match-history", help="Show the proposal and every review for a match."
+    )
+    event_match_history.add_argument("match_id")
+    event_match_history.add_argument("--database", help="SQLite database file.")
+    event_timeline = event_commands.add_parser(
+        "timeline", help="Show one event's chronological, source-linked timeline."
+    )
+    event_timeline.add_argument("event_id")
+    event_timeline.add_argument("--database", help="SQLite database file.")
+    timeline_edit = event_commands.add_parser(
+        "timeline-edit", help="Append an auditable event-time correction."
+    )
+    timeline_edit.add_argument("entry_id")
+    event_time = timeline_edit.add_mutually_exclusive_group(required=True)
+    event_time.add_argument("--event-time")
+    event_time.add_argument(
+        "--clear-event-time", action="store_true",
+        help="Mark the event occurrence time as unknown.",
+    )
+    timeline_edit.add_argument("--analyst", required=True)
+    timeline_edit.add_argument("--rationale", required=True)
+    timeline_edit.add_argument("--updated-at")
+    timeline_edit.add_argument("--database", help="SQLite database file.")
+    timeline_history = event_commands.add_parser(
+        "timeline-history", help="Show all revisions of a timeline entry."
+    )
+    timeline_history.add_argument("entry_id")
+    timeline_history.add_argument("--database", help="SQLite database file.")
     return parser
 
 
@@ -239,6 +323,54 @@ def _print_translation(translation: TranslationRecord) -> None:
     print(f"  translated_text={translation.translated_text}")
 
 
+def _print_event(event: Event, *, revision: int | None = None) -> None:
+    version = "current" if revision is None else f"revision={revision}"
+    print(
+        f"{event.event_id} {event.event_type} [{event.status}] "
+        f"{version} title={event.title}"
+    )
+    print(
+        f"  event_time_start={event.start_time} event_time_end={event.end_time} "
+        f"location={event.location} country={event.country}"
+    )
+
+
+def _print_event_match(match: EventSourceMatch) -> None:
+    print(
+        f"{match.match_id} event={match.event_id} document={match.document_id} "
+        f"source={match.source_id} status={match.status}"
+    )
+    print(f"  proposed_by={match.proposed_by} proposed_at={match.proposed_at}")
+    print(f"  proposal_rationale={match.rationale}")
+    if match.review_decision is not None:
+        print(
+            f"  decision={match.review_decision} reviewer={match.reviewed_by} "
+            f"reviewed_at={match.reviewed_at}"
+        )
+        print(f"  review_rationale={match.review_rationale}")
+
+
+def _print_timeline_entry(entry: TimelineEntry) -> None:
+    print(
+        f"{entry.entry_id} revision={entry.revision} event={entry.event_id} "
+        f"document={entry.document_id} source={entry.source_id} "
+        f"publisher={entry.publisher} title={entry.source_title}"
+    )
+    print(
+        f"  event_time={entry.event_time} publication_time_original="
+        f"{entry.original_publication_time!r} publication_time_normalized="
+        f"{entry.normalized_publication_time!r} "
+        f"publication_timezone_known={entry.publication_timezone_known}"
+    )
+    print(
+        f"  collection_time={entry.collection_time} source_url={entry.source_url}"
+    )
+    print(
+        f"  event_time_rationale={entry.event_time_rationale} "
+        f"updated_by={entry.updated_by} updated_at={entry.updated_at}"
+    )
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     parser = _build_parser()
     args = parser.parse_args(argv)
@@ -254,6 +386,122 @@ def main(argv: Sequence[str] | None = None) -> int:
                 f"{summary.event_type_count} event types, "
                 f"{summary.source_type_count} source types."
             )
+            return 0
+
+        if args.command == "event":
+            settings = Settings.from_environment(
+                database_path_override=args.database
+            )
+            database = Database(settings.database_path)
+            if args.event_command in {"create", "update"}:
+                event_payload = json.loads(
+                    Path(args.file).expanduser().read_text(encoding="utf-8")
+                )
+                event = parse_record("event", event_payload)
+                if not isinstance(event, Event):
+                    raise ValueError("Event JSON did not produce an event record.")
+                if args.event_command == "create":
+                    revision = database.create_event(event)
+                else:
+                    revision = database.update_event(event)
+                print(f"Saved event {event.event_id} revision {revision}.")
+                return 0
+            if args.event_command == "list":
+                events = database.list_events()
+                if not events:
+                    print("No events found.")
+                for event in events:
+                    _print_event(event)
+                return 0
+            if args.event_command == "show":
+                event = database.get(
+                    "event", args.event_id, revision=args.revision
+                )
+                if not isinstance(event, Event):
+                    raise ValueError(f"Record {args.event_id} is not an event.")
+                _print_event(event, revision=args.revision)
+                if args.revision is None:
+                    print(
+                        "  revisions="
+                        + ",".join(
+                            str(revision)
+                            for revision in database.revisions(
+                                "event", args.event_id
+                            )
+                        )
+                    )
+                return 0
+            if args.event_command == "match":
+                proposed_at = args.proposed_at or (
+                    datetime.now(timezone.utc)
+                    .isoformat(timespec="seconds")
+                    .replace("+00:00", "Z")
+                )
+                match = database.propose_event_source_match(
+                    event_id=args.event_id,
+                    document_id=args.document_id,
+                    proposed_by=args.proposed_by,
+                    proposed_at=proposed_at,
+                    rationale=args.rationale,
+                )
+                _print_event_match(match)
+                return 0
+            if args.event_command == "match-history":
+                for match in database.event_source_match_history(args.match_id):
+                    _print_event_match(match)
+                return 0
+            if args.event_command == "matches":
+                matches = database.event_source_matches(
+                    event_id=args.event_id,
+                    document_id=args.document_id,
+                    status=args.status,
+                )
+                if not matches:
+                    print("No candidate event/source matches found.")
+                for match in matches:
+                    _print_event_match(match)
+                return 0
+            if args.event_command == "review-match":
+                reviewed_at = args.reviewed_at or (
+                    datetime.now(timezone.utc)
+                    .isoformat(timespec="seconds")
+                    .replace("+00:00", "Z")
+                )
+                match = database.review_event_source_match(
+                    match_id=args.match_id,
+                    decision=args.decision,
+                    reviewed_by=args.reviewer,
+                    reviewed_at=reviewed_at,
+                    rationale=args.rationale,
+                )
+                _print_event_match(match)
+                return 0
+            if args.event_command == "timeline":
+                if not isinstance(database.get("event", args.event_id), Event):
+                    raise ValueError(f"Record {args.event_id} is not an event.")
+                entries = database.timeline_entries(args.event_id)
+                if not entries:
+                    print("No confirmed source links in this event timeline.")
+                for entry in entries:
+                    _print_timeline_entry(entry)
+                return 0
+            if args.event_command == "timeline-edit":
+                updated_at = args.updated_at or (
+                    datetime.now(timezone.utc)
+                    .isoformat(timespec="seconds")
+                    .replace("+00:00", "Z")
+                )
+                entry = database.revise_timeline_entry(
+                    entry_id=args.entry_id,
+                    event_time=None if args.clear_event_time else args.event_time,
+                    updated_by=args.analyst,
+                    updated_at=updated_at,
+                    rationale=args.rationale,
+                )
+                _print_timeline_entry(entry)
+                return 0
+            for entry in database.timeline_entry_history(args.entry_id):
+                _print_timeline_entry(entry)
             return 0
 
         if args.command == "source":

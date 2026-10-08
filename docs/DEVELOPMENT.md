@@ -68,6 +68,19 @@ cnvs source duplicates --status PENDING
 cnvs source review-duplicate RELATIONSHIP-ID --decision CONFIRMED_DEPENDENT --reviewer analyst --rationale "Shared wire copy"
 cnvs source translation-add DOCUMENT-ID --target-language pl --method "analyst translation" --translator analyst --text-file translation.txt
 cnvs source translations DOCUMENT-ID
+cnvs event create --file event-record.json
+cnvs event list
+cnvs event show CNVS-EVT-2026-10-08-0001
+cnvs event show CNVS-EVT-2026-10-08-0001 --revision 1
+cnvs event update --file corrected-event-record.json
+cnvs event match CNVS-EVT-2026-10-08-0001 DOCUMENT-ID --proposed-by analyst --rationale "Same incident location and time window"
+cnvs event matches --status PENDING
+cnvs event match-history MATCH-ID
+cnvs event review-match MATCH-ID --decision LINKED --reviewer reviewer --rationale "Manually corroborated"
+cnvs event timeline CNVS-EVT-2026-10-08-0001
+cnvs event timeline-edit ENTRY-ID --event-time 2026-10-07T08:15:00Z --analyst analyst --rationale "Primary notice confirms occurrence time"
+cnvs event timeline-edit ENTRY-ID --clear-event-time --analyst analyst --rationale "Previously recorded time was publication time"
+cnvs event timeline-history ENTRY-ID
 ```
 
 Configuration directory resolution is:
@@ -113,7 +126,7 @@ stores provenance metadata and a digest but not the fetched body. These
 controls do not provide legal advice, retention/deletion administration or
 protection against a source's terms changing after review.
 
-## Local database
+## Source documents and events
 
 ### Normalization and duplicate review
 
@@ -145,9 +158,34 @@ The CLI displays extracted source text; use it only where the source terms
 permit retaining content. When `archive_content` is false, normalization is
 intentionally unavailable and no derived text is stored.
 
-## Local database
+### Events and timelines
 
-Stages 3-5 use SQLite and apply checksummed migrations automatically when the
+Create or revise an event using a JSON record that satisfies
+`schemas/event.schema.json`. `event create` only creates a new ID;
+`event update` requires an existing ID and stores a new immutable revision.
+`event list` and `event show` inspect current event records; `event show
+--revision N` reads a specific historical version.
+
+Use `event match EVENT-ID DOCUMENT-ID` to propose that a normalized source
+document concerns an event. The analyst's proposal rationale is retained and
+the candidate starts `PENDING`; it is not an event link until an explicit
+review records `LINKED`. `REJECTED` and `UNRESOLVED` decisions are also
+append-only, rationale-bearing reviews. Multiple events may remain candidate
+matches for one document until ambiguity is resolved. CNVS does not
+automatically match documents or merge event records. `event match-history`
+shows the original proposal and every decision in append order.
+
+Confirming a match creates a timeline entry with unknown occurrence time.
+`event timeline EVENT-ID` displays confirmed links in chronological order,
+showing event occurrence time, original and normalized publication time,
+timezone knowledge, and collection completion time as separate values.
+`event timeline-edit` records or clears an analyst's event-time correction
+with editor identity and rationale. Each correction appends an immutable
+revision; `event timeline-history` displays the audit trail. The system does
+not infer an occurrence time from publication or collection time.
+
+## Local database
+Stages 3-6 use SQLite and apply checksummed migrations automatically when the
 database is opened. The default database path is `.data/cnvs.sqlite3`; override
 it with `CNVS_DATABASE_PATH` or `--database` on a database command:
 
@@ -166,9 +204,10 @@ production backup policy.
 Canonical JSON Schema records are validated before storage, and database
 revisions preserve prior record payloads. Raw snapshots are content-addressed;
 collection attempts, normalized documents, translations, duplicate matches
-and duplicate-review decisions are append-only. `cnvs db status` shows the
-applied schema migrations; changed migration files are rejected and require a
-new migration instead.
+and duplicate-review decisions, event/source match proposals and reviews, and
+event timeline revisions are append-only. `cnvs db status` shows the applied
+schema migrations; changed migration files are rejected and require a new
+migration instead.
 
 `CNVS_LOG_LEVEL` accepts `DEBUG`, `INFO`, `WARNING`, `ERROR` or `CRITICAL`;
 the default is `WARNING`. Environment values are read from the process

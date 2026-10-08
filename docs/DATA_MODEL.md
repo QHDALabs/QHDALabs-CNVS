@@ -134,3 +134,34 @@ be treated as independent confirmation.
 Normalization requires a successful collection whose source terms permitted
 retaining the source body. If archiving was disabled, text and derived content
 are not retained and normalization reports that content is unavailable.
+
+## Event matching and chronology
+
+Stage 6 stores event records through the existing versioned canonical-record
+store. `cnvs event create` validates a complete event record; subsequent
+corrections create revisions, so prior event descriptions and time bounds
+remain auditable.
+
+An analyst proposes a match between an event and a normalized source document
+with a rationale. Proposals start `PENDING`. A reviewer must explicitly mark a
+candidate `LINKED`, `REJECTED` or `UNRESOLVED`; each review records reviewer,
+timestamp and rationale as an append-only entry. The same document may remain
+a candidate for more than one event until ambiguity is resolved. A rejected
+or unresolved match is not included in that event's timeline. CNVS neither
+automatically matches documents nor merges events.
+The CLI can inspect the full proposal/review history and any prior event
+revision.
+
+Confirming a source link creates a timeline entry with no assumed occurrence
+time. Analysts can record or correct that value later; each correction stores
+the rationale and editor in an immutable timeline revision. Timeline output
+keeps these values independent:
+
+- **Event time**: analyst-recorded occurrence time, nullable until established.
+- **Publication time**: original source timestamp and its normalized form, when
+  a timezone was supplied.
+- **Collection time**: completion time of the source collection attempt.
+
+The timeline orders entries using event time when available, otherwise the
+best available publication time, then collection time. It does not substitute
+publication or collection timestamps for an unknown occurrence time.

@@ -214,6 +214,42 @@ class DuplicateRelationship:
     created_at: str
 
 
+@dataclass(frozen=True)
+class EventSourceMatch:
+    match_id: str
+    event_id: str
+    document_id: str
+    source_id: str
+    status: str
+    proposed_by: str
+    proposed_at: str
+    rationale: str
+    review_decision: str | None
+    reviewed_by: str | None
+    reviewed_at: str | None
+    review_rationale: str | None
+
+
+@dataclass(frozen=True)
+class TimelineEntry:
+    entry_id: str
+    event_id: str
+    document_id: str
+    source_id: str
+    publisher: str
+    revision: int
+    event_time: str | None
+    event_time_rationale: str
+    updated_by: str
+    updated_at: str
+    original_publication_time: str | None
+    normalized_publication_time: str | None
+    publication_timezone_known: bool
+    collection_time: str
+    source_title: str
+    source_url: str | None
+
+
 CanonicalRecord: TypeAlias = Event | Source | Claim | Evidence | Assessment
 RECORD_TYPES: dict[str, type[CanonicalRecord]] = {
     model.record_type: model

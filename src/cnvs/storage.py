@@ -18,10 +18,13 @@ from cnvs.models import (
     CollectionResult,
     Evidence,
     DuplicateRelationship,
+    Event,
+    EventSourceMatch,
     JsonValue,
     NormalizedDocument,
     RawSnapshot,
     Source,
+    TimelineEntry,
     TranslationRecord,
 )
 from cnvs.validation import (
@@ -33,6 +36,17 @@ from cnvs.validation import (
 
 class StorageError(RuntimeError):
     """Raised when the database cannot safely store or reconstruct a record."""
+
+
+def _validate_timestamp(value: str, name: str) -> None:
+    if _RFC3339_TIMESTAMP.fullmatch(value) is None:
+        raise StorageError(f"{name} must be an RFC3339 timestamp with a timezone.")
+    try:
+        timestamp = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError as error:
+        raise StorageError(f"{name} must be a valid RFC3339 timestamp.") from error
+    if timestamp.tzinfo is None or timestamp.utcoffset() is None:
+        raise StorageError(f"{name} must include a timezone.")
 
 
 @dataclass(frozen=True)
@@ -166,7 +180,27 @@ class Database:
         return [(row["version"], row["applied_at"]) for row in rows]
 
     def save(self, record: CanonicalRecord) -> int:
+        return self._save(record)
+
+    def _save(
+        self,
+        record: CanonicalRecord,
+        *,
+        create_only: bool = False,
+        require_existing: bool = False,
+    ) -> int:
         payload = validate_record(record)
+        if (
+            isinstance(record, Event)
+            and record.start_time is not None
+            and record.end_time is not None
+        ):
+            start_time = datetime.fromisoformat(
+                record.start_time.replace("Z", "+00:00")
+            )
+            end_time = datetime.fromisoformat(record.end_time.replace("Z", "+00:00"))
+            if end_time < start_time:
+                raise StorageError("Event end_time must not precede start_time.")
         record_id = getattr(record, record.record_id_field)
         payload_json = _json_text(payload)
         timestamp = _utc_now()
@@ -189,6 +223,14 @@ class Database:
                 """,
                 (record.record_type, record_id),
             ).fetchone()
+            if create_only and previous is not None:
+                raise StorageError(
+                    f"{record.record_type.capitalize()} {record_id} already exists."
+                )
+            if require_existing and previous is None:
+                raise StorageError(
+                    f"{record.record_type.capitalize()} {record_id} was not found."
+                )
             revision = 1 if previous is None else previous["revision"] + 1
             connection.execute(
                 """
@@ -884,6 +926,433 @@ class Database:
                     "SELECT * FROM normalized_documents ORDER BY created_at, item_index"
                 ).fetchall()
         return [self._normalized_document_from_row(row) for row in rows]
+
+    def list_events(self) -> list[Event]:
+        with self._connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT payload_json FROM canonical_records
+                WHERE record_type = 'event'
+                ORDER BY record_id
+                """
+            ).fetchall()
+        return [
+            parse_record("event", json.loads(row["payload_json"]))
+            for row in rows
+        ]
+
+    def create_event(self, event: Event) -> int:
+        return self._save(event, create_only=True)
+
+    def update_event(self, event: Event) -> int:
+        return self._save(event, require_existing=True)
+
+    @staticmethod
+    def _event_source_match_from_row(row: sqlite3.Row) -> EventSourceMatch:
+        decision = row["review_decision"]
+        return EventSourceMatch(
+            match_id=row["match_id"],
+            event_id=row["event_id"],
+            document_id=row["document_id"],
+            source_id=row["source_id"],
+            status=decision or "PENDING",
+            proposed_by=row["proposed_by"],
+            proposed_at=row["proposed_at"],
+            rationale=row["rationale"],
+            review_decision=decision,
+            reviewed_by=row["reviewed_by"],
+            reviewed_at=row["reviewed_at"],
+            review_rationale=row["review_rationale"],
+        )
+
+    @staticmethod
+    def _event_source_match_select() -> str:
+        return """
+            SELECT match.*,
+                document.source_id,
+                review.decision AS review_decision,
+                review.reviewed_by,
+                review.reviewed_at,
+                review.rationale AS review_rationale
+            FROM event_source_matches AS match
+            JOIN normalized_documents AS document
+                ON document.document_id = match.document_id
+            LEFT JOIN event_source_match_reviews AS review
+                ON review.review_id = (
+                    SELECT latest.review_id
+                    FROM event_source_match_reviews AS latest
+                    WHERE latest.match_id = match.match_id
+                    ORDER BY latest.rowid DESC
+                    LIMIT 1
+                )
+        """
+
+    def propose_event_source_match(
+        self,
+        *,
+        event_id: str,
+        document_id: str,
+        proposed_by: str,
+        proposed_at: str,
+        rationale: str,
+    ) -> EventSourceMatch:
+        if not proposed_by.strip() or not rationale.strip():
+            raise StorageError(
+                "An event match proposal needs an analyst and rationale."
+            )
+        _validate_timestamp(proposed_at, "proposed_at")
+        match_id = uuid.uuid4().hex
+        with self._lock, self._write_transaction() as connection:
+            self._require_record(connection, "event", event_id)
+            document = connection.execute(
+                "SELECT 1 FROM normalized_documents WHERE document_id = ?",
+                (document_id,),
+            ).fetchone()
+            if document is None:
+                raise StorageError(f"Normalized document {document_id} was not found.")
+            try:
+                connection.execute(
+                    """
+                    INSERT INTO event_source_matches (
+                        match_id, event_id, document_id, rationale,
+                        proposed_by, proposed_at
+                    ) VALUES (?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        match_id,
+                        event_id,
+                        document_id,
+                        rationale.strip(),
+                        proposed_by.strip(),
+                        proposed_at,
+                    ),
+                )
+            except sqlite3.IntegrityError as error:
+                raise StorageError(
+                    f"A candidate match already exists for event {event_id} "
+                    f"and document {document_id}."
+                ) from error
+        return self.get_event_source_match(match_id)
+
+    def get_event_source_match(self, match_id: str) -> EventSourceMatch:
+        with self._connect() as connection:
+            row = connection.execute(
+                self._event_source_match_select()
+                + " WHERE match.match_id = ?",
+                (match_id,),
+            ).fetchone()
+        if row is None:
+            raise StorageError(f"Event source match {match_id} was not found.")
+        return self._event_source_match_from_row(row)
+
+    def event_source_matches(
+        self,
+        *,
+        event_id: str | None = None,
+        document_id: str | None = None,
+        status: str | None = None,
+    ) -> list[EventSourceMatch]:
+        if status not in {None, "PENDING", "LINKED", "REJECTED", "UNRESOLVED"}:
+            raise ValueError("Unsupported event source match status.")
+        query = self._event_source_match_select() + """
+            WHERE (? IS NULL OR match.event_id = ?)
+              AND (? IS NULL OR match.document_id = ?)
+              AND (? IS NULL OR COALESCE(review.decision, 'PENDING') = ?)
+            ORDER BY match.proposed_at, match.match_id
+        """
+        with self._connect() as connection:
+            rows = connection.execute(
+                query,
+                (event_id, event_id, document_id, document_id, status, status),
+            ).fetchall()
+        return [self._event_source_match_from_row(row) for row in rows]
+
+    def event_source_match_history(self, match_id: str) -> list[EventSourceMatch]:
+        with self._connect() as connection:
+            proposal = connection.execute(
+                """
+                SELECT match.*, document.source_id
+                FROM event_source_matches AS match
+                JOIN normalized_documents AS document
+                    ON document.document_id = match.document_id
+                WHERE match.match_id = ?
+                """,
+                (match_id,),
+            ).fetchone()
+            if proposal is None:
+                raise StorageError(f"Event source match {match_id} was not found.")
+            reviews = connection.execute(
+                """
+                SELECT decision, reviewed_by, reviewed_at, rationale
+                FROM event_source_match_reviews
+                WHERE match_id = ?
+                ORDER BY rowid
+                """,
+                (match_id,),
+            ).fetchall()
+        history = [
+            EventSourceMatch(
+                match_id=proposal["match_id"],
+                event_id=proposal["event_id"],
+                document_id=proposal["document_id"],
+                source_id=proposal["source_id"],
+                status="PENDING",
+                proposed_by=proposal["proposed_by"],
+                proposed_at=proposal["proposed_at"],
+                rationale=proposal["rationale"],
+                review_decision=None,
+                reviewed_by=None,
+                reviewed_at=None,
+                review_rationale=None,
+            )
+        ]
+        history.extend(
+            EventSourceMatch(
+                match_id=proposal["match_id"],
+                event_id=proposal["event_id"],
+                document_id=proposal["document_id"],
+                source_id=proposal["source_id"],
+                status=review["decision"],
+                proposed_by=proposal["proposed_by"],
+                proposed_at=proposal["proposed_at"],
+                rationale=proposal["rationale"],
+                review_decision=review["decision"],
+                reviewed_by=review["reviewed_by"],
+                reviewed_at=review["reviewed_at"],
+                review_rationale=review["rationale"],
+            )
+            for review in reviews
+        )
+        return history
+
+    def review_event_source_match(
+        self,
+        *,
+        match_id: str,
+        decision: str,
+        reviewed_by: str,
+        reviewed_at: str,
+        rationale: str,
+    ) -> EventSourceMatch:
+        if decision not in {"LINKED", "REJECTED", "UNRESOLVED"}:
+            raise StorageError(f"Unsupported event match decision: {decision}.")
+        if not reviewed_by.strip() or not rationale.strip():
+            raise StorageError("An event match review needs an analyst and rationale.")
+        _validate_timestamp(reviewed_at, "reviewed_at")
+        review_id = uuid.uuid4().hex
+        with self._lock, self._write_transaction() as connection:
+            match = connection.execute(
+                """
+                SELECT event_id, document_id FROM event_source_matches
+                WHERE match_id = ?
+                """,
+                (match_id,),
+            ).fetchone()
+            if match is None:
+                raise StorageError(f"Event source match {match_id} was not found.")
+            connection.execute(
+                """
+                INSERT INTO event_source_match_reviews (
+                    review_id, match_id, decision, reviewed_by, reviewed_at,
+                    rationale
+                ) VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    review_id,
+                    match_id,
+                    decision,
+                    reviewed_by.strip(),
+                    reviewed_at,
+                    rationale.strip(),
+                ),
+            )
+            if decision == "LINKED":
+                existing = connection.execute(
+                    """
+                    SELECT 1 FROM event_timeline_entries
+                    WHERE event_id = ? AND document_id = ?
+                    """,
+                    (match["event_id"], match["document_id"]),
+                ).fetchone()
+                if existing is None:
+                    connection.execute(
+                        """
+                        INSERT INTO event_timeline_entries (
+                            entry_id, event_id, document_id, revision, event_time,
+                            event_time_rationale, updated_by, updated_at
+                        ) VALUES (?, ?, ?, 1, NULL, ?, ?, ?)
+                        """,
+                        (
+                            uuid.uuid4().hex,
+                            match["event_id"],
+                            match["document_id"],
+                            "Event occurrence time has not been established.",
+                            reviewed_by.strip(),
+                            reviewed_at,
+                        ),
+                    )
+        return self.get_event_source_match(match_id)
+
+    @staticmethod
+    def _timeline_entry_from_row(row: sqlite3.Row) -> TimelineEntry:
+        return TimelineEntry(
+            entry_id=row["entry_id"],
+            event_id=row["event_id"],
+            document_id=row["document_id"],
+            source_id=row["source_id"],
+            publisher=row["publisher_original"],
+            revision=row["revision"],
+            event_time=row["event_time"],
+            event_time_rationale=row["event_time_rationale"],
+            updated_by=row["updated_by"],
+            updated_at=row["updated_at"],
+            original_publication_time=row["original_published_at"],
+            normalized_publication_time=row["normalized_published_at"],
+            publication_timezone_known=bool(row["publication_timezone_known"]),
+            collection_time=row["collection_time"],
+            source_title=row["original_title"] or row["normalized_title"],
+            source_url=row["original_url"],
+        )
+
+    @staticmethod
+    def _timeline_entry_select() -> str:
+        return """
+            SELECT timeline.entry_id, timeline.event_id, timeline.document_id,
+                timeline.revision, timeline.event_time,
+                timeline.event_time_rationale, timeline.updated_by,
+                timeline.updated_at, document.original_published_at,
+                document.normalized_published_at,
+                document.publication_timezone_known,
+                collection.completed_at AS collection_time,
+                document.source_id, document.publisher_original,
+                document.original_title, document.normalized_title,
+                document.original_url
+            FROM event_timeline_entries AS timeline
+            JOIN normalized_documents AS document
+                ON document.document_id = timeline.document_id
+            JOIN collection_attempts AS collection
+                ON collection.collection_id = document.collection_id
+        """
+
+    @staticmethod
+    def _timeline_order_key(entry: TimelineEntry) -> tuple[str, str, str]:
+        value = (
+            entry.event_time
+            or (
+                entry.normalized_publication_time
+                if entry.publication_timezone_known
+                else entry.original_publication_time
+            )
+            or entry.collection_time
+        )
+        try:
+            parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        except ValueError:
+            sortable = value
+        else:
+            if parsed.tzinfo is not None and parsed.utcoffset() is not None:
+                sortable = (
+                    parsed.astimezone(timezone.utc)
+                    .isoformat(timespec="microseconds")
+                    .replace("+00:00", "Z")
+                )
+            else:
+                sortable = parsed.isoformat(timespec="microseconds")
+        return (sortable, entry.event_id, entry.entry_id)
+
+    def timeline_entries(self, event_id: str) -> list[TimelineEntry]:
+        query = self._timeline_entry_select() + """
+                JOIN event_source_matches AS match
+                    ON match.event_id = timeline.event_id
+                    AND match.document_id = timeline.document_id
+                WHERE timeline.event_id = ?
+                  AND timeline.revision = (
+                      SELECT MAX(latest.revision)
+                      FROM event_timeline_entries AS latest
+                      WHERE latest.entry_id = timeline.entry_id
+                  )
+                  AND COALESCE((
+                      SELECT review.decision
+                      FROM event_source_match_reviews AS review
+                      WHERE review.match_id = match.match_id
+                      ORDER BY review.rowid DESC LIMIT 1
+                  ), 'PENDING') = 'LINKED'
+        """
+        with self._connect() as connection:
+            rows = connection.execute(query, (event_id,)).fetchall()
+        entries = [self._timeline_entry_from_row(row) for row in rows]
+        return sorted(entries, key=self._timeline_order_key)
+
+    def timeline_entry_history(self, entry_id: str) -> list[TimelineEntry]:
+        query = self._timeline_entry_select() + """
+                WHERE timeline.entry_id = ?
+                ORDER BY timeline.revision
+        """
+        with self._connect() as connection:
+            rows = connection.execute(query, (entry_id,)).fetchall()
+        if not rows:
+            raise StorageError(f"Timeline entry {entry_id} was not found.")
+        return [self._timeline_entry_from_row(row) for row in rows]
+
+    def revise_timeline_entry(
+        self,
+        *,
+        entry_id: str,
+        event_time: str | None,
+        updated_by: str,
+        updated_at: str,
+        rationale: str,
+    ) -> TimelineEntry:
+        if event_time is not None:
+            _validate_timestamp(event_time, "event_time")
+        if not updated_by.strip() or not rationale.strip():
+            raise StorageError("A timeline correction needs an analyst and rationale.")
+        _validate_timestamp(updated_at, "updated_at")
+        with self._lock, self._write_transaction() as connection:
+            previous = connection.execute(
+                """
+                SELECT event_id, document_id, revision
+                FROM event_timeline_entries
+                WHERE entry_id = ?
+                ORDER BY revision DESC LIMIT 1
+                """,
+                (entry_id,),
+            ).fetchone()
+            if previous is None:
+                raise StorageError(f"Timeline entry {entry_id} was not found.")
+            current_match = connection.execute(
+                self._event_source_match_select()
+                + """
+                    WHERE match.event_id = ? AND match.document_id = ?
+                """,
+                (previous["event_id"], previous["document_id"]),
+            ).fetchone()
+            if (
+                current_match is None
+                or self._event_source_match_from_row(current_match).status != "LINKED"
+            ):
+                raise StorageError(
+                    "Timeline entries can only be corrected while the source link is confirmed."
+                )
+            connection.execute(
+                """
+                INSERT INTO event_timeline_entries (
+                    entry_id, event_id, document_id, revision, event_time,
+                    event_time_rationale, updated_by, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    entry_id,
+                    previous["event_id"],
+                    previous["document_id"],
+                    previous["revision"] + 1,
+                    event_time,
+                    rationale.strip(),
+                    updated_by.strip(),
+                    updated_at,
+                ),
+            )
+        return self.timeline_entry_history(entry_id)[-1]
 
     def add_translation(
         self,

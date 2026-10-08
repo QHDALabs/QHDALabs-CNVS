@@ -8,7 +8,7 @@ reach the first operational CNVS MVP. This file is a project roadmap, not proof
 that planned capabilities have been implemented.
 
 Status key: DONE = completed; TODO = not started; IN PROGRESS = active.
-Last updated: 2026-10-07
+Last updated: 2026-10-08
 Current project status: PARTIAL MVP IMPLEMENTATION; MVP NOT IMPLEMENTED
 
 
@@ -202,7 +202,7 @@ starts successfully.
 
 Stage 6 — Resolve events and build timelines
 --------------------------------------------
-Status: TODO
+Status: DONE
 Tasks:
 - Implement event creation and analyst-assisted event matching.
 - Link incoming sources to candidate events with traceable rationale.
@@ -211,6 +211,17 @@ Tasks:
 Done when:
 - An analyst can inspect, correct and audit event/source links and chronology.
 - Ambiguous event matches remain unresolved rather than being silently merged.
+Outcome: Added versioned event creation/correction, rationale-bearing
+event-to-document match proposals with append-only LINKED/REJECTED/UNRESOLVED
+reviews and review history, and chronological timelines for confirmed links.
+Event occurrence-time corrections are append-only and retain editor/rationale;
+source publication time (original and normalized) and collection completion
+time remain separate. Ambiguous candidates remain pending or explicitly
+unresolved; event matching is analyst-driven and does not merge events.
+Validation: All 69 tests pass on Python 3.14 and Python 3.12 from an installed
+wheel. The installed CLI exposes the event workflow, the wheel contains
+004_event_timelines.sql, configuration validation passes, and Pylance reports
+no diagnostics in changed Python files.
 
 Stage 7 — Extract claims and attribution as derived records
 ----------------------------------------------------------
