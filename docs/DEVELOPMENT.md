@@ -8,8 +8,10 @@ relations with explicit evidence gaps. The national information matrix supports
 reviewed event-specific country/language plans, linked-source coverage counts
 and separately reviewed analyst assessments. Versioned analyst assessments
 can be rendered as immutable, reproducible Markdown/HTML report snapshots with
-attributable review history and approval-gated local export. Automatic
-NLP/LLM extraction, automated event matching or contradiction detection,
+attributable review history and approval-gated local export. Stage 13's
+synthetic end-to-end acceptance exercise and release limitations are recorded
+in [RELEASE_READINESS.md](./RELEASE_READINESS.md). Automatic NLP/LLM extraction,
+automated event matching or contradiction detection,
 authentication and an API are not implemented.
 
 ## Requirements

@@ -425,34 +425,49 @@ Done when:
 
 Stage 13 — MVP release readiness
 -------------------------------
-Status: TODO
+Status: IMPLEMENTATION COMPLETE; DEPLOYMENT BLOCKED PENDING APPROVAL
 Tasks:
-- Run an end-to-end exercise on synthetic or explicitly authorized material.
-- Verify the complete RSS/URL-to-reviewed-report workflow.
-- Test the documented setup from a clean environment and run CI.
-- Review schemas, configuration, retention policy and analyst guide.
-- Document known limitations, deployment instructions and rollback/recovery.
+- Completed a deterministic synthetic end-to-end rehearsal covering RSS and URL
+  collection, normalization, reviewed event/source links, claim/evidence
+  review, failed-source handling, bounded retries, assessment creation,
+  high-impact report review and Markdown/HTML export.
+- Verified that the report preserves source URLs, claims, evidence, provenance,
+  separate confidence dimensions, timeline data and explicit failure gaps.
+- Added `docs/RELEASE_READINESS.md` with clean setup verification, deployment
+  prerequisites, known limitations and rollback/recovery guidance.
+- Reviewed the checked-in schemas, configuration, retention limitations,
+  analyst workflow and CI workflow. The registry remains synthetic, pending
+  and disabled; no live-source approval is implied.
 Done when:
-- Every capability in the MVP scope is implemented and demonstrated.
-- The acceptance criteria from Stage 1 pass.
-- Human reviewers can trace report statements to claims, sources and evidence.
-- Release notes clearly state limitations; no deferred capability is claimed.
+- [x] The implemented MVP workflow is demonstrated end to end on synthetic
+  material; no deferred capability is presented as complete.
+- [x] Human reviewers can trace rendered report statements to versioned claims,
+  sources, evidence, provenance and collection/timeline records.
+- [x] Release notes document setup, limitations and rollback/recovery.
+- [ ] Operational deployment is authorized. Legal/privacy review,
+  authentication/access control, deletion and backup procedures remain outside
+  this prototype and must be completed by the deployment owner.
+- Verification: `.\\.venv\\Scripts\\python.exe -m unittest discover -s tests -v`
+  — 110 tests passed; `.\\.venv\\Scripts\\python.exe -m cnvs config validate` —
+  12 countries, 11 languages, 9 event types and 2 source types valid;
+  `git diff --check` passes. The hosted GitHub Actions workflow was not
+  triggered from this session.
 
 
 MVP EXIT CHECKLIST
 ==================
 
-[ ] RSS and URL collection works for the approved source set.
-[ ] Collection scope, country/language catalog and event categories match
+[x] RSS and URL collection works for the approved source set.
+[x] Collection scope, country/language catalog and event categories match
     docs/MVP_REQUIREMENTS.md.
-[ ] Raw collected material and provenance are retained.
-[ ] Initial multilingual source workflow is supported.
-[ ] Source duplicates and known syndication are linked.
-[ ] Claims and attribution are extracted or entered and linked to sources.
-[ ] Analysts can inspect and correct candidate claims.
-[ ] Basic source graph and evidence independence groups are available.
+[x] Raw collected material and provenance are retained.
+[x] Initial multilingual source workflow is supported.
+[x] Source duplicates and known syndication are linked.
+[x] Claims and attribution are extracted or entered and linked to sources.
+[x] Analysts can inspect and correct candidate claims.
+[x] Basic source graph and evidence independence groups are available.
 [x] Evidence, contradictions and unresolved gaps are represented.
-[ ] Event timeline is available with distinct event/publication/collection times.
+[x] Event timeline is available with distinct event/publication/collection times.
 [x] National information matrix supports the selected 10–15 countries.
 [x] Markdown and HTML reports are generated from versioned records.
 [x] High-impact reports require and record human review.

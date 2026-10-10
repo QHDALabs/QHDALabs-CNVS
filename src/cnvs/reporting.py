@@ -19,7 +19,7 @@ from cnvs.models import (
 from cnvs.storage import Database, ReconstructedAssessment, StorageError
 
 
-_MARKDOWN_SPECIAL = re.compile(r"([\\`*_{}\[\]<>()#+.!|~-])")
+_MARKDOWN_SPECIAL = re.compile(r"([\\`*_{}\[\]<>()#+!|~-])")
 
 
 def _utc_now() -> str:
